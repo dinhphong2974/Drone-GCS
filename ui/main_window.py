@@ -1,168 +1,188 @@
 """
-main_window.py - Cửa sổ chính với Navigation Rail + Dark Theme.
+main_window.py - Cửa sổ chính Mission Control (Single-Screen).
 
 Cấu trúc layout:
     MainWindow (QMainWindow)
     └── centralWidget (QVBoxLayout)
-        ├── frame_topbar (Pin + Wifi + Nút kết nối)
-        └── QHBoxLayout
-            ├── NavRail (thanh điều hướng dọc bên trái)
-            └── QStackedWidget (nội dung bên phải)
-                ├── DashboardTab     (Attitude 3D + Telemetry + Motors)
-                ├── ManualControlTab (Sliders + Buttons + Takeoff)
-                ├── MissionTab       (Waypoint Planning)
-                ├── ConfigTab        (Cấu hình)
-                └── tab_log          (Log - placeholder)
+        ├── TopStatusBar (36px fixed — Battery + WiFi + GPS + Flight Mode)
+        └── QHBoxLayout (body)
+            ├── LeftToolbar (48px fixed — icon buttons)
+            ├── LeftPanel (320px fixed — Attitude 3D + Instruments + Telemetry)
+            ├── MapPanel (stretch — bản đồ Leaflet trung tâm)
+            └── RightPanel (320px fixed — Camera + Command Log)
+
+Không còn: NavRail, QStackedWidget, DashboardTab, ManualControlTab, tab_log.
+ConfigTab → QDialog (mở từ nút Settings trên LeftToolbar).
+MissionTab → MapPanel (map chiếm center, waypoint panel floating).
 """
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFrame, QLabel, QProgressBar, QPushButton,
-    QStackedWidget, QSpacerItem, QSizePolicy, QListWidget, QListWidgetItem
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout
 )
 
-from ui.dashboard_tab import DashboardTab
-from ui.manual_control_tab import ManualControlTab
-from ui.mission_tab import MissionTab
+from ui.widgets.top_status_bar import TopStatusBar
+from ui.widgets.left_toolbar import LeftToolbar
+from ui.widgets.left_panel import LeftPanel
+from ui.widgets.right_panel import RightPanel
+from ui.map_panel import MapPanel
 from ui.config_tab import ConfigTab
 
+
 # ══════════════════════════════════════════════
-# DARK THEME STYLESHEET
+# MISSION CONTROL DARK THEME
 # ══════════════════════════════════════════════
 
 DARK_THEME = """
 QMainWindow, QWidget {
-    background-color: #1a1a2e;
-    color: #d0d0e8;
+    background-color: #0a0e17;
+    color: #c0c8d8;
     font-family: 'Segoe UI', 'Roboto', sans-serif;
 }
 QGroupBox {
-    border: 1px solid #2a2a4a;
-    border-radius: 8px;
+    border: 1px solid #1a2332;
+    border-radius: 6px;
     margin-top: 14px;
     padding-top: 18px;
     font-weight: bold;
-    color: #a0a0c8;
+    color: #808098;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 12px;
+    left: 10px;
     padding: 0 6px;
 }
 QLabel {
-    color: #c0c0e0;
+    color: #c0c8d8;
     border: none;
 }
 QProgressBar {
-    border: 1px solid #2a2a4a;
+    border: 1px solid #1a2332;
     border-radius: 4px;
-    background-color: #252540;
+    background-color: #1a1a2e;
     text-align: center;
 }
 QProgressBar::chunk {
     border-radius: 3px;
-    background-color: #4CAF50;
+    background-color: #00ff88;
 }
 QPushButton {
-    background-color: #2d2d50;
-    color: #d0d0e8;
-    border: 1px solid #3a3a60;
+    background-color: #141a28;
+    color: #c0c8d8;
+    border: 1px solid #1a2332;
     border-radius: 6px;
     padding: 6px 14px;
     font-weight: bold;
 }
 QPushButton:hover {
-    background-color: #3a3a6a;
-    border-color: #5a5a90;
+    background-color: #1a2840;
+    border-color: #2a3a52;
 }
 QPushButton:pressed {
-    background-color: #1a1a30;
+    background-color: #0a1020;
 }
 QPushButton:disabled {
-    background-color: #1a1a2a;
-    color: #505070;
-    border-color: #252540;
+    background-color: #0d1117;
+    color: #3a3a4a;
+    border-color: #1a2332;
 }
 QSlider::groove:horizontal {
-    border: 1px solid #2a2a4a;
+    border: 1px solid #1a2332;
     height: 6px;
-    background: #252540;
+    background: #1a1a2e;
     border-radius: 3px;
 }
 QSlider::handle:horizontal {
-    background: #6c6cff;
-    border: 1px solid #8a8aff;
+    background: #00ff88;
+    border: 1px solid #00cc6a;
     width: 16px;
     margin: -5px 0;
     border-radius: 8px;
 }
 QSlider::handle:horizontal:hover {
-    background: #8a8aff;
+    background: #33ffaa;
 }
 QLineEdit {
-    background-color: #252540;
-    color: #d0d0e8;
-    border: 1px solid #2a2a4a;
+    background-color: #141a28;
+    color: #c0c8d8;
+    border: 1px solid #1a2332;
     border-radius: 4px;
     padding: 5px 8px;
-    selection-background-color: #4a4a90;
+    selection-background-color: rgba(0, 255, 136, 0.2);
 }
 QTableWidget {
-    background-color: #1e1e38;
-    color: #d0d0e8;
-    border: 1px solid #2a2a4a;
-    gridline-color: #2a2a4a;
-    alternate-background-color: #252540;
+    background-color: #080c14;
+    color: #c0c8d8;
+    border: 1px solid #1a2332;
+    gridline-color: #1a2332;
+    alternate-background-color: #0d1117;
 }
 QTableWidget::item { padding: 4px; }
 QHeaderView::section {
-    background-color: #2a2a4a;
-    color: #c0c0e0;
-    border: 1px solid #3a3a60;
+    background-color: #0a0e17;
+    color: #00ff88;
+    border: 1px solid #1a2332;
     padding: 4px;
     font-weight: bold;
 }
 QScrollBar:vertical {
-    background: #1a1a2e;
-    width: 10px;
-    border-radius: 5px;
+    background: #0a0e17;
+    width: 8px;
+    border-radius: 4px;
 }
 QScrollBar::handle:vertical {
-    background: #3a3a60;
-    border-radius: 5px;
+    background: #2a3442;
+    border-radius: 4px;
     min-height: 20px;
 }
-QSplitter::handle {
-    background-color: #2a2a4a;
-    width: 3px;
+QScrollBar::handle:vertical:hover {
+    background: #3a4a5a;
 }
-QFrame#frame_topbar {
-    background-color: #14142a;
-    border-bottom: 1px solid #2a2a4a;
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QSpinBox {
+    background-color: #141a28;
+    color: #c0c8d8;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    padding: 4px;
+}
+QDialog {
+    background-color: #0a0e17;
+    color: #c0c8d8;
 }
 """
 
 
 class MainWindow(QMainWindow):
     """
-    Cửa sổ chính của ứng dụng GCS với Navigation Rail.
+    Cửa sổ chính Mission Control — single-screen layout.
 
-    Chỉ chứa UI layout:
-    - Top Bar: Hiển thị pin, wifi, nút kết nối
-    - Nav Rail: Điều hướng dọc bên trái
-    - Stacked Widget: Nội dung trang bên phải
+    Chỉ chứa UI layout, logic xử lý nằm ở GCSApp (main.py).
 
-    Logic xử lý nằm ở GCSApp (main.py), KHÔNG nằm ở đây.
+    Widget ownership (truy cập từ GCSApp):
+        self.top_bar        — TopStatusBar
+        self.left_toolbar   — LeftToolbar (ARM/Takeoff/RTH/Settings/Disconnect)
+        self.left_panel     — LeftPanel (Attitude 3D + Instruments + Telemetry)
+        self.map_panel      — MapPanel (map Leaflet + waypoint overlay)
+        self.right_panel    — RightPanel (Camera + CommandLog)
+        self.command_log    — shortcut → right_panel.command_log
+        self.config_tab     — ConfigTab (QDialog, không hiển thị mặc định)
+
+    Backward-compatible shortcuts (cho main.py rewiring an toàn):
+        self.btn_disconnect → left_toolbar.btn_disconnect
+        self.mission_tab    → map_panel (alias)
     """
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Drone Ground Control Station - INAV MSP")
-        self.resize(1400, 900)
+        self.setWindowTitle("Drone GCS — Mission Control")
+        self.resize(1600, 900)
+        self.setMinimumSize(1280, 720)
 
-        # Font in đậm dùng chung
+        # Font dùng chung
         self._bold_font = QFont()
         self._bold_font.setBold(True)
 
@@ -173,191 +193,87 @@ class MainWindow(QMainWindow):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Xây dựng layout chính: Top Bar + [Nav Rail | Content]."""
+        """Xây dựng single-screen Mission Control layout."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── Top Bar ──
-        self._create_topbar()
-        main_layout.addWidget(self.frame_topbar)
+        # ═══════ TOP STATUS BAR (36px) ═══════
+        self.top_bar = TopStatusBar()
+        main_layout.addWidget(self.top_bar)
 
-        # ── Body: Nav Rail (trái) + Content (phải) ──
+        # ═══════ BODY: Toolbar + Left + Center + Right ═══════
         body_layout = QHBoxLayout()
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
 
-        self._create_nav_rail()
-        body_layout.addWidget(self.nav_rail)
+        # ── Left Toolbar (48px fixed) ──
+        self.left_toolbar = LeftToolbar()
+        body_layout.addWidget(self.left_toolbar)
 
-        self._create_pages()
-        body_layout.addWidget(self.stacked_widget)
+        # ── Left Panel (320px fixed — Attitude + Telemetry) ──
+        self.left_panel = LeftPanel()
+        body_layout.addWidget(self.left_panel)
+
+        # ── Center Map (stretch) ──
+        self.map_panel = MapPanel()
+        body_layout.addWidget(self.map_panel, stretch=1)
+
+        # ── Right Panel (320px fixed — Camera + Log) ──
+        self.right_panel = RightPanel()
+        body_layout.addWidget(self.right_panel)
 
         main_layout.addLayout(body_layout)
 
-    # ══════════════════════════════════════════════
-    # TOP BAR (Pin + WiFi + Nút kết nối)
-    # ══════════════════════════════════════════════
+        # ═══════ BACKWARD-COMPATIBLE SHORTCUTS ═══════
+        # Để main.py rewiring an toàn — giữ tên cũ chỉ trỏ tới widget mới
 
-    def _create_topbar(self):
-        """Tạo thanh trạng thái trên cùng."""
-        self.frame_topbar = QFrame()
-        self.frame_topbar.setObjectName("frame_topbar")
-        self.frame_topbar.setFixedHeight(48)
+        # btn_disconnect: main.py dùng self.btn_disconnect.clicked.connect(...)
+        self.btn_disconnect = self.left_toolbar.btn_disconnect
 
-        h_layout = QHBoxLayout(self.frame_topbar)
-        h_layout.setContentsMargins(16, 6, 16, 6)
+        # mission_tab: main.py dùng self.mission_tab cho waypoint/map logic
+        self.mission_tab = self.map_panel
 
-        # ── Nhóm Pin ──
-        self.lbl_batt_volt = QLabel("-- V")
-        self.lbl_batt_volt.setFont(self._bold_font)
-        self.lbl_batt_volt.setStyleSheet("color: #e0e0ff;")
-        h_layout.addWidget(self.lbl_batt_volt)
+        # command_log shortcut
+        self.command_log = self.right_panel.command_log
 
-        self.bar_battery_volt = QProgressBar()
-        self.bar_battery_volt.setMinimumSize(QSize(150, 18))
-        self.bar_battery_volt.setMaximumSize(QSize(200, 22))
-        self.bar_battery_volt.setValue(0)
-        self.bar_battery_volt.setTextVisible(False)
-        h_layout.addWidget(self.bar_battery_volt)
+        # ═══════ CONFIG TAB → DIALOG (không hiển thị mặc định) ═══════
+        self.config_tab = ConfigTab()
+        # Settings button mở dialog
+        self.left_toolbar.btn_settings.clicked.connect(self._open_config_dialog)
 
-        self.lbl_batt_perc = QLabel("-- %")
-        self.lbl_batt_perc.setFont(self._bold_font)
-        self.lbl_batt_perc.setStyleSheet("color: #e0e0ff;")
-        h_layout.addWidget(self.lbl_batt_perc)
+        # ═══════ TOOLBAR SIGNALS ═══════
+        # Waypoints toggle
+        self.left_toolbar.btn_waypoints.clicked.connect(self.map_panel.toggle_waypoint_panel)
 
-        # ── Khoảng trống giãn ──
-        h_layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
-
-        # ── Ping (RTT GCS↔ESP32) ──
-        self.lbl_ping_title = QLabel("Ping:")
-        self.lbl_ping_title.setStyleSheet("color: #808098;")
-        h_layout.addWidget(self.lbl_ping_title)
-
-        self.lbl_ping = QLabel("🏓 ---ms")
-        self.lbl_ping.setFont(self._bold_font)
-        self.lbl_ping.setStyleSheet("color: #808098;")
-        self.lbl_ping.setMinimumWidth(90)
-        h_layout.addWidget(self.lbl_ping)
-
-        h_layout.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
-
-        # ── Nhóm WiFi ──
-        self.lbl_wifi_status = QLabel("WiFi Status:")
-        self.lbl_wifi_status.setStyleSheet("color: #808098;")
-        h_layout.addWidget(self.lbl_wifi_status)
-
-        self.lbl_wifi_icon = QLabel("📶 Đang chờ")
-        self.lbl_wifi_icon.setFont(self._bold_font)
-        h_layout.addWidget(self.lbl_wifi_icon)
-
-        h_layout.addItem(QSpacerItem(20, 20, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum))
-
-        # ── Nút kết nối ──
-        self.btn_disconnect = QPushButton("Ngắt kết nối")
-        self.btn_disconnect.setMinimumSize(QSize(130, 32))
-        self.btn_disconnect.setStyleSheet(
-            "QPushButton { background-color: #F44336; color: white; "
-            "font-weight: bold; border-radius: 4px; } "
-            "QPushButton:hover { background-color: #D32F2F; }"
-        )
-        h_layout.addWidget(self.btn_disconnect)
+        # Locate drone
+        self.left_toolbar.locate_clicked.connect(self._locate_drone_on_map)
 
     # ══════════════════════════════════════════════
-    # NAVIGATION RAIL (thanh dọc bên trái)
+    # ACTIONS
     # ══════════════════════════════════════════════
 
-    def _create_nav_rail(self):
-        """Tạo thanh điều hướng dọc bên trái với icons + text."""
-        self.nav_rail = QListWidget()
-        self.nav_rail.setFixedWidth(160)
-        self.nav_rail.setSpacing(2)
-        self.nav_rail.setStyleSheet("""
-            QListWidget {
-                background-color: #14142a;
-                border: none;
-                border-right: 1px solid #2a2a4a;
-                outline: none;
-                padding-top: 8px;
-            }
-            QListWidget::item {
-                color: #808098;
-                padding: 12px 16px;
-                border-radius: 8px;
-                margin: 2px 8px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QListWidget::item:selected {
-                background-color: #2a2a55;
-                color: #a0a0ff;
-                border-left: 3px solid #6c6cff;
-            }
-            QListWidget::item:hover:!selected {
-                background-color: #1e1e40;
-                color: #c0c0e0;
+    def _open_config_dialog(self):
+        """Mở ConfigTab dạng modal dialog."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout
+        dialog = QDialog(self)
+        dialog.setWindowTitle("⚙ Cấu hình Drone GCS")
+        dialog.resize(600, 500)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #0a0e17;
+                color: #c0c8d8;
             }
         """)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # Tạo config tab mới trong dialog (tránh reparent)
+        config = ConfigTab()
+        layout.addWidget(config)
+        dialog.exec()
 
-        nav_items = [
-            ("📊  Dashboard",       0),
-            ("🎮  Manual Control",  1),
-            ("🗺️  Mission",         2),
-            ("⚙️  Config",          3),
-            ("📋  Log",             4),
-        ]
-
-        for text, idx in nav_items:
-            item = QListWidgetItem(text)
-            item.setSizeHint(QSize(140, 44))
-            item.setData(Qt.UserRole, idx)
-            self.nav_rail.addItem(item)
-
-        # Mặc định chọn Dashboard
-        self.nav_rail.setCurrentRow(0)
-
-        # Kết nối chuyển trang
-        self.nav_rail.currentRowChanged.connect(self._on_nav_changed)
-
-    # ══════════════════════════════════════════════
-    # PAGES (QStackedWidget)
-    # ══════════════════════════════════════════════
-
-    def _create_pages(self):
-        """Tạo QStackedWidget chứa các trang nội dung."""
-        self.stacked_widget = QStackedWidget()
-
-        # Page 0: Dashboard (Attitude 3D + Telemetry + Motors)
-        self.dashboard_tab = DashboardTab()
-        self.stacked_widget.addWidget(self.dashboard_tab)
-
-        # Page 1: Manual Control (Sliders + Buttons)
-        self.manual_control_tab = ManualControlTab()
-        self.stacked_widget.addWidget(self.manual_control_tab)
-
-        # Page 2: Mission (Waypoint Planning)
-        self.mission_tab = MissionTab()
-        self.stacked_widget.addWidget(self.mission_tab)
-
-        # Page 3: Config (placeholder)
-        self.config_tab = ConfigTab()
-        self.stacked_widget.addWidget(self.config_tab)
-
-        # Page 4: Log (placeholder)
-        self.tab_log = QWidget()
-        log_layout = QVBoxLayout(self.tab_log)
-        lbl_log = QLabel("📋 Log — Đang phát triển...")
-        lbl_log.setAlignment(Qt.AlignCenter)
-        lbl_log.setStyleSheet("color: #808098; font-size: 16px; font-weight: bold;")
-        log_layout.addWidget(lbl_log)
-        self.stacked_widget.addWidget(self.tab_log)
-
-        # Mặc định hiển thị Dashboard
-        self.stacked_widget.setCurrentIndex(0)
-
-    def _on_nav_changed(self, index: int):
-        """Chuyển trang khi chọn mục trên Nav Rail."""
-        if 0 <= index < self.stacked_widget.count():
-            self.stacked_widget.setCurrentIndex(index)
+    def _locate_drone_on_map(self):
+        """Chuyển map tới vị trí drone hiện tại."""
+        self.map_panel._locate_drone()

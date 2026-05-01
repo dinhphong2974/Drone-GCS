@@ -8,11 +8,10 @@ File này CHỈ đóng vai trò:
 
 Kiến trúc module:
     main.py → khởi tạo + điều phối Signal/Slot
-    ui/main_window.py → cửa sổ chính (Nav Rail + Stacked Pages)
-    ui/dashboard_tab.py → trang Attitude 3D + Telemetry + Motors
-    ui/manual_control_tab.py → trang điều khiển thủ công
-    ui/mission_tab.py → trang lộ trình bay + OpenStreetMap
-    ui/config_tab.py → trang cấu hình
+    ui/main_window.py → cửa sổ chính (Single-Screen Mission Control)
+    ui/widgets/ → TopStatusBar, LeftToolbar, LeftPanel, RightPanel
+    ui/map_panel.py → bản đồ Leaflet + waypoint overlay
+    ui/config_tab.py → cấu hình (QDialog)
     ui/emergency_overlay.py → overlay cảnh báo khẩn cấp
     comm/wifi_client.py → kết nối TCP thô
     comm/wifi_worker.py → QThread chạy ngầm
@@ -217,7 +216,7 @@ class GCSApp(MainWindow):
     def __init__(self):
         super().__init__()
 
-        # Gắn sự kiện cho nút kết nối/ngắt kết nối ở Top Bar
+        # Gắn sự kiện cho nút kết nối/ngắt kết nối
         self.btn_disconnect.clicked.connect(self.toggle_connection)
 
         self.worker: WifiWorker | None = None
@@ -238,16 +237,14 @@ class GCSApp(MainWindow):
         self.emergency_overlay.btn_emergency_disarm.clicked.connect(self._emergency_force_disarm)
         self.emergency_overlay.btn_emergency_safe_land.clicked.connect(self._emergency_force_safe_land)
 
-        # ── Kết nối nút điều khiển bay (từ ManualControlTab) ──
-        mc = self.manual_control_tab
-        mc.btn_arm.clicked.connect(self.flight_controller.arm)
-        mc.btn_disarm.clicked.connect(self.flight_controller.disarm)
-        mc.btn_takeoff_hold.clicked.connect(self._confirm_takeoff)
-        mc.btn_manual_takeoff.clicked.connect(self._confirm_manual_takeoff)
-        mc.btn_rth.clicked.connect(self.flight_controller.rth)
+        # ── Kết nối nút điều khiển bay (từ LeftToolbar) ──
+        tb = self.left_toolbar
+        tb.btn_arm.clicked.connect(self.flight_controller.arm)
+        tb.btn_takeoff.clicked.connect(self._confirm_takeoff)
+        tb.btn_rth.clicked.connect(self.flight_controller.rth)
 
-        # ── Kết nối nút mission (từ MissionTab) ──
-        mt = self.mission_tab
+        # ── Kết nối nút mission (từ MapPanel) ──
+        mt = self.map_panel
         mt.btn_upload.clicked.connect(self._upload_mission)
         mt.btn_start_mission_tab.clicked.connect(self._start_mission)
         mt.btn_stop_mission.clicked.connect(self._stop_mission)
@@ -260,7 +257,7 @@ class GCSApp(MainWindow):
 
         # ── Timer phát hiện mất PONG (ping timeout) ──
         self._ping_timeout_timer = QTimer(self)
-        self._ping_timeout_timer.setInterval(3000)  # 3 giây không có PONG → timeout
+        self._ping_timeout_timer.setInterval(3000)
         self._ping_timeout_timer.setSingleShot(True)
         self._ping_timeout_timer.timeout.connect(self._on_ping_timeout)
 
@@ -347,9 +344,13 @@ class GCSApp(MainWindow):
 
         Nhận dict đã giải mã từ WifiWorker qua Signal,
         chỉ cập nhật các trường có dữ liệu mới.
+
+        Widget mapping (v2 Mission Control):
+            left_panel.val_*  ← telemetry values
+            top_bar           ← battery, GPS summary, flight mode
+            map_panel         ← drone position on map
         """
-        # Shortcut truy cập tab dashboard
-        dash = self.dashboard_tab
+        lp = self.left_panel
 
         # ── Cập nhật điện áp pin Lipo 6S ──
         if "voltage" in data:
@@ -357,81 +358,73 @@ class GCSApp(MainWindow):
             self.drone_state.voltage = v
             percent = int(((v - LIPO_6S_MIN_VOLTAGE) / (LIPO_6S_MAX_VOLTAGE - LIPO_6S_MIN_VOLTAGE)) * 100)
             percent = max(0, min(100, percent))
-
-            self.lbl_batt_volt.setText(f"{v:.2f} V")
-            self.lbl_batt_perc.setText(f"{percent} %")
-            self.bar_battery_volt.setValue(percent)
-
-            color = "#4CAF50" if percent > 50 else ("#FFC107" if percent > 20 else "#F44336")
-            self.bar_battery_volt.setStyleSheet(f"QProgressBar::chunk {{ background-color: {color}; }}")
+            self.top_bar.update_battery(v, percent)
 
         if "current" in data:
             self.drone_state.current = data["current"]
+            lp.val_current.setText(f"{data['current']:.1f} A")
+            lp.val_current.setStyleSheet("color: #00ff88; font-weight: bold;")
 
         # ── Cập nhật góc nghiêng + đồng bộ vào drone_state ──
         if "roll" in data:
             self.drone_state.roll = data["roll"]
-            dash.val_roll.setText(f"{data['roll']:.1f}°")
+            lp.val_roll.setText(f"{data['roll']:.1f}°")
         if "pitch" in data:
             self.drone_state.pitch = data["pitch"]
-            dash.val_pitch.setText(f"{data['pitch']:.1f}°")
+            lp.val_pitch.setText(f"{data['pitch']:.1f}°")
         if "yaw" in data:
             self.drone_state.yaw = data["yaw"]
-            dash.val_yaw.setText(f"{data['yaw']:.1f}°")
+            lp.val_yaw.setText(f"{data['yaw']:.1f}°")
 
-        # ── Cập nhật Attitude 3D Widget (Panda3D) ──
+        # ── Cập nhật Attitude 3D Widget (Panda3D) + Instruments ──
         if any(k in data for k in ("roll", "pitch", "yaw")):
-            dash.widget_3d_attitude.update_attitude(
+            lp.widget_3d_attitude.update_attitude(
                 self.drone_state.roll,
                 self.drone_state.pitch,
                 self.drone_state.yaw,
             )
-
-        # ── Cập nhật vòng tua động cơ 1960kv ──
-        if "motor1" in data:
-            dash.val_motor1.setText(str(data["motor1"]))
-            dash.bar_motor1.setValue(data["motor1"])
-            dash.val_motor2.setText(str(data["motor2"]))
-            dash.bar_motor2.setValue(data["motor2"])
-            dash.val_motor3.setText(str(data["motor3"]))
-            dash.bar_motor3.setValue(data["motor3"])
-            dash.val_motor4.setText(str(data["motor4"]))
-            dash.bar_motor4.setValue(data["motor4"])
+            # Cập nhật Compass + ADI instruments
+            lp.update_instruments(
+                self.drone_state.yaw,
+                self.drone_state.roll,
+                self.drone_state.pitch,
+            )
 
         # ── Cập nhật độ cao từ barometer (MSP_ALTITUDE) ──
         if "altitude" in data:
             alt = data["altitude"]
             self.drone_state.altitude = alt
-            dash.val_alt.setText(f"{alt:.1f} m")
-            dash.val_alt.setStyleSheet("color: #2196F3; font-weight: bold;")
+            lp.val_alt.setText(f"{alt:.1f} m")
+            lp.val_alt.setStyleSheet("color: #2196F3; font-weight: bold;")
 
         if "vario" in data:
             self.drone_state.vario = data["vario"]
+            lp.val_vario.setText(f"{data['vario']:.1f} m/s")
 
         # ── Cập nhật trạng thái ARM từ FC (MSP_STATUS) ──
         if "is_armed" in data:
             self.drone_state.is_armed = data["is_armed"]
-            if data["is_armed"]:
-                dash.val_armed.setText("ARMED")
-                dash.val_armed.setStyleSheet("color: red; font-weight: bold;")
+            self.top_bar.update_armed_status(data["is_armed"])
+            self.left_toolbar.set_arm_state(data["is_armed"])
 
-                # Hiện emergency overlay khi drone ARMED
+            if data["is_armed"]:
+                lp.val_armed.setText("ARMED")
+                lp.val_armed.setStyleSheet("color: #ff4444; font-weight: bold;")
+
                 if not self.emergency_overlay.isVisible():
                     self.emergency_overlay.show_with_mode("Armed")
 
-                # Chốt Home position khi ARM lần đầu (read-only từ GPS)
                 if not self.drone_state.has_home and self.drone_state.latitude != 0.0:
                     self.drone_state.home_lat = self.drone_state.latitude
                     self.drone_state.home_lon = self.drone_state.longitude
                     self.drone_state.has_home = True
-                    self.mission_tab.update_home_position(
+                    self.map_panel.update_home_position(
                         self.drone_state.home_lat, self.drone_state.home_lon
                     )
             else:
-                dash.val_armed.setText("DISARMED")
-                dash.val_armed.setStyleSheet("color: #4CAF50; font-weight: bold;")
+                lp.val_armed.setText("DISARMED")
+                lp.val_armed.setStyleSheet("color: #00ff88; font-weight: bold;")
 
-                # Ẩn emergency overlay khi DISARMED (trừ khi FC đang idle)
                 if self.emergency_overlay.isVisible() and not self.flight_controller.is_active:
                     self.emergency_overlay.hide_overlay()
 
@@ -447,50 +440,56 @@ class GCSApp(MainWindow):
             fix_text = "No Fix" if data["gps_fix_type"] == 0 else (
                 "2D" if data["gps_fix_type"] == 1 else "3D ✓"
             )
-            fix_color = "#4CAF50" if data["gps_fix_type"] >= 2 else "#F44336"
-            dash.val_gps_fix.setText(fix_text)
-            dash.val_gps_fix.setStyleSheet(f"color: {fix_color}; font-weight: bold;")
+            fix_color = "#00ff88" if data["gps_fix_type"] >= 2 else "#ff4444"
+            lp.val_gps_fix.setText(fix_text)
+            lp.val_gps_fix.setStyleSheet(f"color: {fix_color}; font-weight: bold;")
 
         if "gps_num_sat" in data:
             self.drone_state.gps_num_sat = data["gps_num_sat"]
-            dash.val_sats.setText(str(data["gps_num_sat"]))
-            sat_color = "#4CAF50" if data["gps_num_sat"] >= 6 else "#FFC107"
-            dash.val_sats.setStyleSheet(f"color: {sat_color}; font-weight: bold;")
+            lp.val_sats.setText(str(data["gps_num_sat"]))
+            sat_color = "#00ff88" if data["gps_num_sat"] >= 6 else "#ffd700"
+            lp.val_sats.setStyleSheet(f"color: {sat_color}; font-weight: bold;")
 
         if "gps_hdop" in data:
             self.drone_state.gps_hdop = data["gps_hdop"]
-            dash.val_gps_accuracy.setText(f"{data['gps_hdop']:.2f} m")
-            acc_color = "#4CAF50" if data["gps_hdop"] < 2.5 else ("#FFC107" if data["gps_hdop"] < 5.0 else "#F44336")
-            dash.val_gps_accuracy.setStyleSheet(f"color: {acc_color}; font-weight: bold;")
+            lp.val_gps_accuracy.setText(f"{data['gps_hdop']:.2f}")
+            acc_color = "#00ff88" if data["gps_hdop"] < 2.5 else ("#ffd700" if data["gps_hdop"] < 5.0 else "#ff4444")
+            lp.val_gps_accuracy.setStyleSheet(f"color: {acc_color}; font-weight: bold;")
+
+        # Cập nhật GPS summary trên top bar
+        if "gps_fix_type" in data or "gps_num_sat" in data or "gps_hdop" in data:
+            self.top_bar.update_gps(
+                self.drone_state.gps_fix_type,
+                self.drone_state.gps_num_sat,
+                self.drone_state.gps_hdop
+            )
 
         if "latitude" in data:
             self.drone_state.latitude = data["latitude"]
-            dash.val_lat.setText(f"{data['latitude']:.6f}")
-            dash.val_lat.setStyleSheet("color: #2196F3; font-weight: bold;")
+            lp.val_lat.setText(f"{data['latitude']:.6f}")
+            lp.val_lat.setStyleSheet("color: #2196F3; font-weight: bold;")
 
         if "longitude" in data:
             self.drone_state.longitude = data["longitude"]
-            dash.val_lon.setText(f"{data['longitude']:.6f}")
-            dash.val_lon.setStyleSheet("color: #2196F3; font-weight: bold;")
+            lp.val_lon.setText(f"{data['longitude']:.6f}")
+            lp.val_lon.setStyleSheet("color: #2196F3; font-weight: bold;")
 
         if "ground_speed" in data:
             self.drone_state.ground_speed = data["ground_speed"]
-            dash.val_spd.setText(f"{data['ground_speed']:.1f} m/s")
-            dash.val_spd.setStyleSheet("color: #2196F3; font-weight: bold;")
+            lp.val_spd.setText(f"{data['ground_speed']:.1f} m/s")
+            lp.val_spd.setStyleSheet("color: #2196F3; font-weight: bold;")
 
         if "gps_altitude" in data:
             self.drone_state.gps_altitude = data["gps_altitude"]
 
-        # ── Cập nhật vị trí drone trên bản đồ mission (real-time, no reload) ──
+        # ── Cập nhật vị trí drone trên bản đồ (real-time, no reload) ──
         if "latitude" in data and "longitude" in data:
             lat = data["latitude"]
             lon = data["longitude"]
             self.drone_state.record_gps_history()
-            heading = self.drone_state.yaw  # Heading từ MSP_ATTITUDE
+            heading = self.drone_state.yaw
             if lat != 0.0 or lon != 0.0:
-                self.mission_tab.update_drone_position(lat, lon, heading)
-
-                # Kiểm tra cảnh báo khoảng cách
+                self.map_panel.update_drone_position(lat, lon, heading)
                 self._check_distance_safety()
 
         # ══════════════════════════════════════════════
@@ -503,153 +502,120 @@ class GCSApp(MainWindow):
             self.drone_state.has_valid_surface = s_alt >= 0
 
             if s_alt >= 0:
-                dash.val_surface_alt.setText(f"{s_alt:.2f} m")
-                dash.val_surface_alt.setStyleSheet("color: #00E676; font-weight: bold;")
+                lp.val_surface_alt.setText(f"{s_alt:.2f} m")
+                lp.val_surface_alt.setStyleSheet("color: #00E676; font-weight: bold;")
             else:
-                dash.val_surface_alt.setText("Out of Range")
-                dash.val_surface_alt.setStyleSheet("color: #808098; font-weight: bold;")
+                lp.val_surface_alt.setText("Out of Range")
+                lp.val_surface_alt.setStyleSheet("color: #808098; font-weight: bold;")
 
         if "surface_quality" in data:
             s_qual = data["surface_quality"]
             self.drone_state.surface_quality = s_qual
-            qual_color = "#00E676" if s_qual > 100 else ("#FFC107" if s_qual > 0 else "#F44336")
-            dash.val_lidar_qual.setText(str(s_qual))
-            dash.val_lidar_qual.setStyleSheet(f"color: {qual_color}; font-weight: bold;")
+            qual_color = "#00E676" if s_qual > 100 else ("#ffd700" if s_qual > 0 else "#ff4444")
+            lp.val_lidar_qual.setText(str(s_qual))
+            lp.val_lidar_qual.setStyleSheet(f"color: {qual_color}; font-weight: bold;")
 
         # ══════════════════════════════════════════════
-        # CẬP NHẬT SENSOR HEALTH CARD (từ MSP_STATUS_EX)
+        # CẬP NHẬT SENSOR STATE (từ MSP_STATUS_EX)
         # ══════════════════════════════════════════════
 
         if "sensor_opflow" in data:
             self.drone_state.sensor_opflow = data["sensor_opflow"]
             if data["sensor_opflow"]:
-                dash.val_opflow.setText("✅ Active")
-                dash.val_opflow.setStyleSheet("color: #00E676; font-weight: bold;")
-                dash.bar_sensor_opflow.setValue(100)
-                dash.bar_sensor_opflow.setStyleSheet(
-                    "QProgressBar { border: 1px solid #2a2a4a; border-radius: 4px; background-color: #252540; }"
-                    "QProgressBar::chunk { border-radius: 3px; background-color: #00E676; }"
-                )
-                dash.val_sensor_opflow.setText("Active")
-                dash.val_sensor_opflow.setStyleSheet("color: #00E676; font-weight: bold;")
+                lp.val_opflow.setText("✅ Active")
+                lp.val_opflow.setStyleSheet("color: #00E676; font-weight: bold;")
             else:
-                dash.val_opflow.setText("⚠️ Inactive")
-                dash.val_opflow.setStyleSheet("color: #FFC107; font-weight: bold;")
-                dash.bar_sensor_opflow.setValue(0)
-                dash.val_sensor_opflow.setText("Inactive")
-                dash.val_sensor_opflow.setStyleSheet("color: #FFC107; font-weight: bold;")
+                lp.val_opflow.setText("⚠️ Inactive")
+                lp.val_opflow.setStyleSheet("color: #ffd700; font-weight: bold;")
 
         if "sensor_rangefinder" in data:
             self.drone_state.sensor_rangefinder = data["sensor_rangefinder"]
-            if data["sensor_rangefinder"]:
-                dash.bar_sensor_lidar.setValue(100)
-                dash.bar_sensor_lidar.setStyleSheet(
-                    "QProgressBar { border: 1px solid #2a2a4a; border-radius: 4px; background-color: #252540; }"
-                    "QProgressBar::chunk { border-radius: 3px; background-color: #00E676; }"
-                )
-                dash.val_sensor_lidar.setText("Active")
-                dash.val_sensor_lidar.setStyleSheet("color: #00E676; font-weight: bold;")
-            else:
-                dash.bar_sensor_lidar.setValue(0)
-                dash.val_sensor_lidar.setText("Off")
-                dash.val_sensor_lidar.setStyleSheet("color: #808098; font-weight: bold;")
-
         if "sensor_mag" in data:
             self.drone_state.sensor_mag = data["sensor_mag"]
-            if data["sensor_mag"]:
-                dash.bar_sensor_mag.setValue(100)
-                dash.bar_sensor_mag.setStyleSheet(
-                    "QProgressBar { border: 1px solid #2a2a4a; border-radius: 4px; background-color: #252540; }"
-                    "QProgressBar::chunk { border-radius: 3px; background-color: #00E676; }"
-                )
-                dash.val_sensor_mag.setText("OK")
-                dash.val_sensor_mag.setStyleSheet("color: #00E676; font-weight: bold;")
-            else:
-                dash.bar_sensor_mag.setValue(0)
-                dash.val_sensor_mag.setText("Off")
-                dash.val_sensor_mag.setStyleSheet("color: #808098; font-weight: bold;")
-
         if "sensor_gps" in data:
             self.drone_state.sensor_gps = data["sensor_gps"]
-
         if "sensor_baro" in data:
             self.drone_state.sensor_baro = data["sensor_baro"]
 
-        # Cập nhật GPS sensor health bar dựa trên số vệ tinh
-        if "gps_num_sat" in data:
-            num_sat = data["gps_num_sat"]
-            gps_quality = min(100, int(num_sat / 12 * 100))
-            dash.bar_sensor_gps.setValue(gps_quality)
-            gps_color = "#00E676" if num_sat >= 8 else ("#FFC107" if num_sat >= 4 else "#F44336")
-            dash.bar_sensor_gps.setStyleSheet(
-                f"QProgressBar {{ border: 1px solid #2a2a4a; border-radius: 4px; background-color: #252540; }}"
-                f"QProgressBar::chunk {{ border-radius: 3px; background-color: {gps_color}; }}"
-            )
-            fix_text = "3D" if self.drone_state.gps_fix_type >= 2 else ("2D" if self.drone_state.gps_fix_type == 1 else "No")
-            dash.val_sensor_gps.setText(f"{num_sat} sats ({fix_text})")
-            dash.val_sensor_gps.setStyleSheet(f"color: {gps_color}; font-weight: bold;")
+        # ══════════════════════════════════════════════
+        # CẬP NHẬT RSSI + POWER + DISTANCE (BUG-3/4 FIX)
+        # ══════════════════════════════════════════════
 
+        if "rssi" in data:
+            rssi = data["rssi"]
+            lp.val_rssi.setText(f"{rssi}")
+            rssi_color = "#00ff88" if rssi > 50 else ("#ffd700" if rssi > 20 else "#ff4444")
+            lp.val_rssi.setStyleSheet(f"color: {rssi_color}; font-weight: bold;")
+
+        # BUG-4 FIX: Tính công suất P = V × I
+        if self.drone_state.voltage > 0 and self.drone_state.current > 0:
+            power = self.drone_state.voltage * self.drone_state.current
+            lp.val_power.setText(f"{power:.1f} W")
+            pwr_color = "#00ff88" if power < 100 else ("#ffd700" if power < 300 else "#ff4444")
+            lp.val_power.setStyleSheet(f"color: {pwr_color}; font-weight: bold;")
+
+        # BUG-3 FIX: Cập nhật khoảng cách drone → Home trên LeftPanel
+        if self.drone_state.has_home and self.drone_state.latitude != 0.0:
+            from ui.map_panel import haversine_distance
+            dist = haversine_distance(
+                self.drone_state.home_lat, self.drone_state.home_lon,
+                self.drone_state.latitude, self.drone_state.longitude
+            )
+            if dist < 1000:
+                lp.val_distance.setText(f"{dist:.0f} m")
+            else:
+                lp.val_distance.setText(f"{dist/1000:.2f} km")
+            dist_color = "#00ff88" if dist < 50 else ("#ffd700" if dist < 200 else "#ff4444")
+            lp.val_distance.setStyleSheet(f"color: {dist_color}; font-weight: bold;")
     # ══════════════════════════════════════════════
     # QUẢN LÝ TRẠNG THÁI UI
     # ══════════════════════════════════════════════
 
     def set_ui_state_na(self):
-        """Trạng thái mất mạng: Khóa giao diện và chuyển nút thành KẾT NỐI."""
-        dash = self.dashboard_tab
+        """Trạng thái mất mạng: Khóa giao diện và reset telemetry labels."""
+        lp = self.left_panel
 
         labels_to_na = [
-            dash.val_batt_curr, dash.val_mode, dash.val_armed, dash.val_alt,
-            dash.val_lat, dash.val_lon, dash.val_roll, dash.val_pitch,
-            dash.val_yaw, dash.val_gps_fix, dash.val_sats, dash.val_gps_accuracy, dash.val_spd,
-            dash.val_motor1, dash.val_motor2, dash.val_motor3, dash.val_motor4,
-            dash.val_surface_alt, dash.val_lidar_qual, dash.val_opflow
+            lp.val_armed, lp.val_alt, lp.val_lat, lp.val_lon,
+            lp.val_roll, lp.val_pitch, lp.val_yaw,
+            lp.val_gps_fix, lp.val_sats, lp.val_gps_accuracy, lp.val_spd,
+            lp.val_surface_alt, lp.val_lidar_qual, lp.val_opflow,
+            lp.val_current, lp.val_vario, lp.val_rssi, lp.val_distance,
+            lp.val_power
         ]
         for lbl in labels_to_na:
             lbl.setText("N/A")
-            lbl.setStyleSheet("color: gray;")
+            lbl.setStyleSheet("color: #3a3a4a;")
 
-        self.lbl_batt_volt.setText("-- V")
-        self.lbl_batt_perc.setText("-- %")
-        self.bar_battery_volt.setValue(0)
+        # Reset top bar
+        self.top_bar.update_battery(0, 0)
+        self.top_bar.update_connection(False)
+        self.top_bar.update_flight_mode("⏸ IDLE", "#808098")
 
-        self.lbl_wifi_icon.setText("📶 Mất kết nối")
-        self.lbl_wifi_icon.setStyleSheet("color: gray;")
-
-        # Reset ping label về trạng thái chưa đo
-        self.lbl_ping.setText("🏓 ---ms")
-        self.lbl_ping.setStyleSheet("color: #808098;")
-
-        # Dừng ping timeout timer
+        # Reset ping
+        self.top_bar.lbl_ping.setText("🏓 ---ms")
+        self.top_bar.lbl_ping.setStyleSheet("color: #808098;")
         self._ping_timeout_timer.stop()
 
-        self.btn_disconnect.setText("Kết nối")
-        self.btn_disconnect.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #45a049; }"
-        )
+        # Disable flight controls
+        self.left_toolbar.set_enabled_flight_controls(False)
+        self.left_toolbar.set_takeoff_state("IDLE")
+        self.map_panel.setEnabled(False)
 
-        self.manual_control_tab.setEnabled(False)
-        self.manual_control_tab.val_flight_status.setText("IDLE")
-        self.manual_control_tab.val_flight_status.setStyleSheet("color: gray;")
-        self.mission_tab.setEnabled(False)
+        # Log
+        self.command_log.append_log("SYS", "Đã ngắt kết nối")
 
     def enable_ui_components(self):
-        """Trạng thái có mạng: Mở khóa giao diện và chuyển nút thành NGẮT KẾT NỐI."""
-        dash = self.dashboard_tab
+        """Trạng thái có mạng: Mở khóa giao diện."""
+        lp = self.left_panel
 
-        self.manual_control_tab.setEnabled(True)
-        self.mission_tab.setEnabled(True)
-        dash.val_armed.setStyleSheet("color: red;")
-        dash.val_gps_fix.setStyleSheet("color: #4CAF50;")
+        self.left_toolbar.set_enabled_flight_controls(True)
+        self.map_panel.setEnabled(True)
+        lp.val_armed.setStyleSheet("color: #ff4444;")
+        lp.val_gps_fix.setStyleSheet("color: #00ff88;")
 
-        self.lbl_wifi_icon.setText("📶 Đã kết nối")
-        self.lbl_wifi_icon.setStyleSheet("color: #4CAF50;")
-
-        self.btn_disconnect.setText("Ngắt kết nối")
-        self.btn_disconnect.setStyleSheet(
-            "QPushButton { background-color: #F44336; color: white; font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #D32F2F; }"
-        )
+        self.top_bar.update_connection(True)
+        self.command_log.append_log("SYS", "Đã kết nối thành công")
 
     # ══════════════════════════════════════════════
     # VÒNG ĐỜI ỨNG DỤNG
@@ -707,80 +673,54 @@ class GCSApp(MainWindow):
 
     def _on_flight_status(self, message: str):
         """Slot: Cập nhật trạng thái bay lên UI."""
-        self.manual_control_tab.val_flight_status.setText(message)
-        self.manual_control_tab.val_flight_status.setStyleSheet(
-            "color: #2196F3; font-weight: bold;"
-        )
+        self.top_bar.update_flight_mode(f"✈ {message}", "#2196F3")
+        self.command_log.append_log("GCS", message, "#2196F3")
 
     def _on_takeoff_complete(self):
         """Slot: Cất cánh thành công — cập nhật UI."""
-        self.manual_control_tab.val_flight_status.setStyleSheet(
-            "color: #4CAF50; font-weight: bold;"
-        )
+        self.top_bar.update_flight_mode("✅ HOLDING", "#00ff88")
+        self.command_log.append_log("GCS", "Takeoff complete — Holding position", "#00ff88")
 
     def _on_flight_error(self, message: str):
         """
-        Slot: Lỗi bay — cập nhật status label KHÔNG hiện QMessageBox.
+        Slot: Lỗi bay — cập nhật status KHÔNG hiện QMessageBox.
 
         Lý do bỏ QMessageBox.critical: Dialog modal sẽ CHẶN TOÀN BỘ
-        tương tác UI — kể cả nút Emergency overlay. Khi drone đang bay
-        mà hiện dialog → người dùng KHÔNG THỂ bấm DISARM → nguy hiểm.
+        tương tác UI — kể cả nút Emergency overlay.
         """
-        self.manual_control_tab.val_flight_status.setText(f"⚠️ LỖI: {message}")
-        self.manual_control_tab.val_flight_status.setStyleSheet(
-            "color: red; font-weight: bold;"
-        )
+        self.top_bar.update_flight_mode(f"⚠️ {message}", "#ff4444")
+        self.command_log.append_log("ERR", message)
 
     def _on_flight_state_changed(self, new_state: str):
-        """Slot: State machine chuyển trạng thái — cập nhật nút Takeoff/Abort."""
-        mc = self.manual_control_tab
+        """Slot: State machine chuyển trạng thái — cập nhật LeftToolbar."""
+        tb = self.left_toolbar
         if new_state == "IDLE":
-            mc.btn_takeoff_hold.setText("🚀 Takeoff")
-            mc.btn_takeoff_hold.setStyleSheet(
-                "QPushButton { background-color: #FF9800; color: white; font-weight: bold; "
-                "font-size: 14px; border-radius: 6px; } "
-                "QPushButton:hover { background-color: #F57C00; } "
-                "QPushButton:disabled { background-color: #555; color: #888; }"
-            )
+            tb.set_takeoff_state("IDLE")
             try:
-                mc.btn_takeoff_hold.clicked.disconnect()
+                tb.btn_takeoff.clicked.disconnect()
             except RuntimeError:
                 pass
-            mc.btn_takeoff_hold.clicked.connect(self._confirm_takeoff)
-            mc.btn_manual_takeoff.setEnabled(True)
+            tb.btn_takeoff.clicked.connect(self._confirm_takeoff)
         elif new_state in ("NAV_OFF_BEFORE_DISARM", "NAV_OFF_BEFORE_SAFE_LAND"):
-            # Intermediate NAV OFF states — chỉ cập nhật status
-            mc.val_flight_status.setText(f"⏳ {new_state}")
-            mc.val_flight_status.setStyleSheet("color: #FFC107; font-weight: bold;")
+            self.top_bar.update_flight_mode(f"⏳ {new_state}", "#ffd700")
+            self.command_log.append_log("GCS", f"State: {new_state}", "#ffd700")
         elif new_state in ("MANUAL_ANGLE_IDLE", "MANUAL_THROTTLE_RAMP",
                            "MANUAL_CLIMB_ANGLE", "MANUAL_SWITCH_NAV"):
-            mc.val_flight_status.setText(f"🛩 {new_state}")
-            mc.val_flight_status.setStyleSheet("color: #2196F3; font-weight: bold;")
-            mc.btn_manual_takeoff.setEnabled(False)
-            mc.btn_takeoff_hold.setText("⛔ ABORT")
-            mc.btn_takeoff_hold.setStyleSheet(
-                "QPushButton { background-color: #F44336; color: white; font-weight: bold; "
-                "font-size: 14px; border-radius: 6px; } "
-                "QPushButton:hover { background-color: #D32F2F; }"
-            )
+            self.top_bar.update_flight_mode(f"🛩 {new_state}", "#2196F3")
+            self.command_log.append_log("GCS", f"State: {new_state}", "#2196F3")
+            tb.set_takeoff_state(new_state)
             try:
-                mc.btn_takeoff_hold.clicked.disconnect()
+                tb.btn_takeoff.clicked.disconnect()
             except RuntimeError:
                 pass
-            mc.btn_takeoff_hold.clicked.connect(self.flight_controller.abort)
+            tb.btn_takeoff.clicked.connect(self.flight_controller.abort)
         else:
-            mc.btn_takeoff_hold.setText("⛔ ABORT")
-            mc.btn_takeoff_hold.setStyleSheet(
-                "QPushButton { background-color: #F44336; color: white; font-weight: bold; "
-                "font-size: 14px; border-radius: 6px; } "
-                "QPushButton:hover { background-color: #D32F2F; }"
-            )
+            tb.set_takeoff_state(new_state)
             try:
-                mc.btn_takeoff_hold.clicked.disconnect()
+                tb.btn_takeoff.clicked.disconnect()
             except RuntimeError:
                 pass
-            mc.btn_takeoff_hold.clicked.connect(self.flight_controller.abort)
-            mc.btn_manual_takeoff.setEnabled(False)
+            tb.btn_takeoff.clicked.connect(self.flight_controller.abort)
 
     def _on_mode_activated(self, mode_name: str):
         """
@@ -797,60 +737,26 @@ class GCSApp(MainWindow):
             self.drone_state.active_mode_name = ""
 
     def _on_ping_updated(self, rtt_ms: int):
-        """
-        Slot: Nhận RTT mới từ WifiWorker, cập nhật ping label trên top bar.
-
-        Màu sắc theo chất lượng:
-          • Xanh lá  (≤50ms)  : Tốt
-          • Vàng     (≤150ms) : Trung bình
-          • Cam      (≤300ms) : Chậm
-          • Đỏ       (>300ms) : Kém
-        """
+        """Slot: Nhận RTT mới từ WifiWorker."""
         self.drone_state.ping_rtt_ms = rtt_ms
-        self.lbl_ping.setText(f"🏓 {rtt_ms}ms")
-        if rtt_ms <= 50:
-            color = "#4CAF50"   # xanh lá — tốt
-        elif rtt_ms <= 150:
-            color = "#FFC107"   # vàng — trung bình
-        elif rtt_ms <= 300:
-            color = "#FF9800"   # cam — chậm
-        else:
-            color = "#F44336"   # đỏ — kém
-        self.lbl_ping.setStyleSheet(f"color: {color}; font-weight: bold;")
-
-        # Reset ping timeout — mỗi khi nhận PONG thành công, đặt lại đồng hồ 3s
+        self.top_bar.update_ping(rtt_ms)
         self._ping_timeout_timer.start()
 
     def _on_ping_timeout(self):
-        """
-        Slot: Quá 3 giây không nhận PONG mới → hiển thị Timeout trên ping label.
-
-        Điều này xảy ra khi WiFi yếu hoặc ESP32 mất tín hiệu nhưng socket
-        chưa bị đóng hoàn toàn (TCP keepalive chưa timeout).
-        """
-        self.lbl_ping.setText("🏓 Timeout")
-        self.lbl_ping.setStyleSheet("color: #F44336; font-weight: bold;")
+        """Slot: Quá 3 giây không nhận PONG mới."""
+        self.top_bar.lbl_ping.setText("🏓 Timeout")
+        self.top_bar.lbl_ping.setStyleSheet("color: #ff4444; font-weight: bold;")
 
     def _on_command_acked(self, ack_type: str):
-        """
-        Slot: ESP32 đã xác nhận nhận lệnh — hiển thị trên flight status.
-
-        ACK types:
-          • RC  : Lệnh RC đã gửi tới FC
-          • FS  : Cấu hình failsafe đã lưu
-          • EM  : Lệnh khẩn cấp đã thực thi
-        """
+        """Slot: ESP32 đã xác nhận nhận lệnh."""
         type_labels = {
             "RC": "✓ RC",
             "FS": "✓ Failsafe config",
             "EM": "✓ Emergency cmd",
         }
         label = type_labels.get(ack_type, f"✓ ACK:{ack_type}")
-        # Chỉ hiển thị trên status nếu không phải RC (RC quá nhiều sẽ gây nhấp nháy)
         if ack_type != "RC":
-            mc = self.manual_control_tab
-            mc.val_flight_status.setText(label)
-            mc.val_flight_status.setStyleSheet("color: #00E676; font-weight: bold;")
+            self.command_log.append_log("ACK", label, "#00E676")
 
     # ══════════════════════════════════════════════
     # EMERGENCY OVERLAY — NÚT KHẨN CẤP
@@ -871,7 +777,7 @@ class GCSApp(MainWindow):
 
     def _upload_mission(self):
         """Upload waypoints từ MissionTab xuống FC qua MSP_SET_WP."""
-        waypoints = self.mission_tab.get_waypoints()
+        waypoints = self.map_panel.get_waypoints()
         if not waypoints:
             QMessageBox.warning(self, "Cảnh báo", "Chưa có waypoint nào để upload!")
             return
@@ -897,7 +803,7 @@ class GCSApp(MainWindow):
         3. Gửi cấu hình failsafe xuống ESP32
         4. Thông báo kết quả
         """
-        waypoints = self.mission_tab.get_waypoints()
+        waypoints = self.map_panel.get_waypoints()
         if not waypoints:
             QMessageBox.warning(self, "Cảnh báo", "Chưa có waypoint nào! Hãy click trên bản đồ để thêm.")
             return
@@ -925,13 +831,13 @@ class GCSApp(MainWindow):
         if clicked == btn_yes:
             # Cấu hình ESP32: Mất WiFi → RTH
             self.flight_controller.send_failsafe_config("rth")
-            self.mission_tab.val_failsafe_status.setText("RTH khi mất WiFi")
-            self.mission_tab.val_failsafe_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            self.map_panel.val_failsafe_status.setText("RTH khi mất WiFi")
+            self.map_panel.val_failsafe_status.setStyleSheet("color: #00ff88; font-weight: bold;")
         elif clicked == btn_ignore:
             # Cấu hình ESP32: Mất WiFi → Không can thiệp, drone bay hết WP rồi Safe Land
             self.flight_controller.send_failsafe_config("ignore")
-            self.mission_tab.val_failsafe_status.setText("Ignore — Safe Land cuối")
-            self.mission_tab.val_failsafe_status.setStyleSheet("color: #FFC107; font-weight: bold;")
+            self.map_panel.val_failsafe_status.setText("Ignore — Safe Land cuối")
+            self.map_panel.val_failsafe_status.setStyleSheet("color: #ffd700; font-weight: bold;")
 
         # Upload waypoints rồi thông báo sẵn sàng
         self.flight_controller.upload_mission(waypoints)
@@ -968,13 +874,13 @@ class GCSApp(MainWindow):
         if not self.drone_state.has_home:
             return
 
-        if self.mission_tab.check_distance_warning():
+        if self.map_panel.check_distance_warning():
             self._distance_warning_shown = True
 
             reply = QMessageBox.question(
                 self,
                 "⚠️ Cảnh báo Khoảng cách",
-                f"Drone đã bay xa hơn {self.mission_tab._distance_threshold}m "
+                f"Drone đã bay xa hơn {self.map_panel._distance_threshold}m "
                 "so với vị trí Home!\n\n"
                 "Bạn có muốn kích hoạt cơ chế Failsafe\n"
                 "(RTH tự động) khi mất kết nối WiFi không?",
@@ -983,8 +889,8 @@ class GCSApp(MainWindow):
             )
             if reply == QMessageBox.Yes:
                 self.flight_controller.send_failsafe_config("rth")
-                self.mission_tab.val_failsafe_status.setText("RTH — Auto Failsafe")
-                self.mission_tab.val_failsafe_status.setStyleSheet("color: #F44336; font-weight: bold;")
+                self.map_panel.val_failsafe_status.setText("RTH — Auto Failsafe")
+                self.map_panel.val_failsafe_status.setStyleSheet("color: #ff4444; font-weight: bold;")
 
 
 

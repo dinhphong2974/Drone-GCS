@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flight Instruments</title>
+    <link rel="stylesheet" href="flight-indicators/css/flightindicators.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background-color: transparent;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 4px 0;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+
+        .instruments-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .instrument-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .instrument-label {
+            color: #808098;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        .instrument-value {
+            color: #00ff88;
+            font-size: 12px;
+            font-weight: bold;
+            margin-top: 4px;
+            text-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+        }
+
+        /* Override default instrument size */
+        div.instrument {
+            width: 130px !important;
+            height: 130px !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="instruments-container">
+        <!-- Heading / Compass -->
+        <div class="instrument-group">
+            <div class="instrument-label">LA BÀN / HƯỚNG MŨI</div>
+            <div id="heading"></div>
+            <div class="instrument-value" id="heading-value">0.0°</div>
+        </div>
+
+        <!-- Attitude / ADI -->
+        <div class="instrument-group">
+            <div class="instrument-label">ĐỘ DỐC MŨI / GÓC NGHIÊNG</div>
+            <div id="attitude"></div>
+            <div class="instrument-value" id="attitude-value">R: 0.0° P: 0.0°</div>
+        </div>
+    </div>
+
+    <script src="flight-indicators/js/jquery.min.js"></script>
+    <script src="flight-indicators/js/jquery.flightindicators.js"></script>
+    <script>
+        // Initialize instruments
+        var headingIndicator = $.flightIndicator('#heading', 'heading', {
+            size: 130,
+            heading: 0,
+            showBox: true,
+            img_directory: 'flight-indicators/img/'
+        });
+
+        var attitudeIndicator = $.flightIndicator('#attitude', 'attitude', {
+            size: 130,
+            roll: 0,
+            pitch: 0,
+            showBox: true,
+            img_directory: 'flight-indicators/img/'
+        });
+
+        /**
+         * Public API — called from Python via runJavaScript()
+         * @param {number} heading - Yaw heading in degrees (0-360)
+         * @param {number} roll - Roll angle in degrees
+         * @param {number} pitch - Pitch angle in degrees
+         */
+        function updateInstruments(heading, roll, pitch) {
+            headingIndicator.setHeading(heading);
+            attitudeIndicator.setRoll(roll);
+            attitudeIndicator.setPitch(pitch);
+
+            // Update value labels
+            document.getElementById('heading-value').textContent =
+                heading.toFixed(1) + '°';
+            document.getElementById('attitude-value').textContent =
+                'R: ' + roll.toFixed(1) + '° P: ' + pitch.toFixed(1) + '°';
+        }
+
+        // Signal to Python that instruments are ready
+        if (typeof qt !== 'undefined' && qt.webChannelTransport) {
+            // QWebChannel integration if needed
+        }
+    </script>
+</body>
+</html>

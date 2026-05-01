@@ -356,9 +356,10 @@ class WifiWorker(QThread):
                 mock_surface_alt = -1.0  # Ngoài tầm LiDAR
                 mock_surface_quality = 0
 
-            # Đóng gói và phát dữ liệu giả lên UI (telemetry + GPS + LiDAR)
+            # Đóng gói và phát dữ liệu giả lên UI (telemetry + GPS + LiDAR + Sensors)
             fake_data = {
                 "voltage": mock_volt,
+                "current": random.uniform(0.5, 15.0),  # BUG-2 FIX
                 "pitch": mock_pitch,
                 "roll": random.uniform(-5.0, 5.0),
                 "yaw": random.uniform(0, 360),
@@ -373,6 +374,7 @@ class WifiWorker(QThread):
                 # ── GPS Data (từ GPS BZ 251 giả lập) ──
                 "gps_fix_type": self._mock_gps_fix,
                 "gps_num_sat": self._mock_gps_sats,
+                "gps_hdop": random.uniform(0.8, 3.5),  # BUG-1 FIX
                 "latitude": self._mock_gps_lat,
                 "longitude": self._mock_gps_lon,
                 "gps_altitude": self._mock_altitude,
@@ -381,6 +383,12 @@ class WifiWorker(QThread):
                 # ── LiDAR Data (MTF-02 giả lập) ──
                 "surface_altitude": mock_surface_alt,
                 "surface_quality": mock_surface_quality,
+                # ── Sensor Health (MSP_STATUS_EX giả lập) ── BUG-1 FIX
+                "sensor_opflow": True,
+                "sensor_rangefinder": mock_surface_quality > 0,
+                "sensor_mag": True,
+                "sensor_gps": self._mock_gps_fix >= 2,
+                "sensor_baro": True,
             }
             self.telemetry_data.emit(fake_data)
 

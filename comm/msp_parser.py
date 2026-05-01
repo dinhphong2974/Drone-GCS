@@ -298,6 +298,7 @@ class MSPParser:
                 # INAV gửi điện áp x10 (VD: 245 → 24.5V cho pin Lipo 6S)
                 result['voltage'] = vbat / LIPO_6S_VOLTAGE_DIVIDER
                 result['current'] = amp / CURRENT_DIVIDER
+                result['rssi'] = rssi  # BUG-7 FIX: RSSI bị parse nhưng không return
 
             elif cmd == MSP_ATTITUDE and size >= 6:
                 # Cấu trúc: roll(2B int) + pitch(2B int) + yaw(2B int)
