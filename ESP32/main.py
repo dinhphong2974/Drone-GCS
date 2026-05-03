@@ -249,10 +249,13 @@ def handle_emergency(data):
 
     Khi nhận prefix "EM:", ESP32 sẽ:
     1. Xóa toàn bộ UART input buffer (discard response đang chờ)
-    2. Chuyển tiếp MSP frame ngay lập tức xuống FC
+    2. Chuyển tiếp TẤT CẢ MSP frames xuống FC ngay lập tức
     3. Reset failsafe state để không ghi đè lệnh emergency
 
-    Dùng cho force_disarm() và force_safe_land() từ GCS.
+    FIX TCP Coalescing: GCS gửi NAV_OFF + DISARM + DISARM liên tiếp,
+    TCP có thể ghép thành 1 buffer: b'EM:<frame1>EM:<frame2>EM:<frame3>'
+    Phiên bản cũ chỉ xử lý frame đầu → DISARM có thể bị mất.
+    Phiên bản mới: Loop qua TẤT CẢ EM: frames trong buffer.
 
     Args:
         data: Bytes dữ liệu nhận từ TCP, bắt đầu bằng "EM:"
@@ -262,28 +265,43 @@ def handle_emergency(data):
     """
     global failsafe_triggered
 
-    if data.startswith(EMERGENCY_PREFIX):
-        msp_frame = data[len(EMERGENCY_PREFIX):]
+    if not data.startswith(EMERGENCY_PREFIX):
+        return False
 
-        # 1. Xóa UART input buffer — loại bỏ response cũ đang chờ
-        #    Giúp FC nhận lệnh emergency nhanh hơn, không bị chậm bởi queue cũ
-        uart.read()
+    # 1. Xóa UART input buffer 1 LẦN — loại bỏ response cũ đang chờ
+    uart.read()
 
-        # 2. Gửi MSP frame xuống FC ngay lập tức
+    # 2. Parse và gửi TẤT CẢ EM: frames trong buffer
+    #    TCP coalescing có thể ghép nhiều lệnh emergency thành 1 recv()
+    frame_count = 0
+    remaining = data
+    prefix_len = len(EMERGENCY_PREFIX)
+
+    while remaining.startswith(EMERGENCY_PREFIX):
+        remaining = remaining[prefix_len:]
+
+        # Tìm EM: tiếp theo trong buffer (nếu có)
+        next_em_pos = remaining.find(EMERGENCY_PREFIX)
+        if next_em_pos >= 0:
+            msp_frame = remaining[:next_em_pos]
+            remaining = remaining[next_em_pos:]
+        else:
+            msp_frame = remaining
+            remaining = b''
+
+        # Gửi MSP frame xuống FC ngay lập tức
         if msp_frame:
             uart.write(msp_frame)
-            print("[!] EMERGENCY — Đã chuyển tiếp lệnh khẩn cấp xuống FC")
+            frame_count += 1
 
-        # 3. Tắt failsafe state — lệnh emergency có quyền cao hơn failsafe
-        #    Nếu ESP32 đang gửi RTH liên tục, lệnh DISARM sẽ bị ghi đè
-        #    → Phải tắt failsafe để lệnh DISARM có hiệu lực
-        if failsafe_triggered:
-            failsafe_triggered = False
-            print("[!] EMERGENCY — Failsafe bị tắt bởi lệnh khẩn cấp")
+    print("[!] EMERGENCY — Đã chuyển tiếp", frame_count, "frame(s) khẩn cấp xuống FC")
 
-        return True
+    # 3. Tắt failsafe state — lệnh emergency có quyền cao hơn failsafe
+    if failsafe_triggered:
+        failsafe_triggered = False
+        print("[!] EMERGENCY — Failsafe bị tắt bởi lệnh khẩn cấp")
 
-    return False
+    return True
 
 
 def close_connection():

@@ -241,6 +241,7 @@ class GCSApp(MainWindow):
         tb = self.left_toolbar
         tb.btn_arm.clicked.connect(self.flight_controller.arm)
         tb.btn_takeoff.clicked.connect(self._confirm_takeoff)
+        tb.btn_manual_takeoff.clicked.connect(self._confirm_manual_takeoff)
         tb.btn_rth.clicked.connect(self.flight_controller.rth)
 
         # ── Kết nối nút mission (từ MapPanel) ──
@@ -602,6 +603,9 @@ class GCSApp(MainWindow):
         self.left_toolbar.set_takeoff_state("IDLE")
         self.map_panel.setEnabled(False)
 
+        # Reset home tracking
+        self.drone_state.has_home = False
+
         # Log
         self.command_log.append_log("SYS", "Đã ngắt kết nối")
 
@@ -696,26 +700,37 @@ class GCSApp(MainWindow):
         tb = self.left_toolbar
         if new_state == "IDLE":
             tb.set_takeoff_state("IDLE")
+            # Reset NAV takeoff button
             try:
                 tb.btn_takeoff.clicked.disconnect()
             except RuntimeError:
                 pass
             tb.btn_takeoff.clicked.connect(self._confirm_takeoff)
+            # Reset Manual takeoff button
+            try:
+                tb.btn_manual_takeoff.clicked.disconnect()
+            except RuntimeError:
+                pass
+            tb.btn_manual_takeoff.clicked.connect(self._confirm_manual_takeoff)
+
         elif new_state in ("NAV_OFF_BEFORE_DISARM", "NAV_OFF_BEFORE_SAFE_LAND"):
             self.top_bar.update_flight_mode(f"⏳ {new_state}", "#ffd700")
             self.command_log.append_log("GCS", f"State: {new_state}", "#ffd700")
+
         elif new_state in ("MANUAL_ANGLE_IDLE", "MANUAL_THROTTLE_RAMP",
                            "MANUAL_CLIMB_ANGLE", "MANUAL_SWITCH_NAV"):
             self.top_bar.update_flight_mode(f"🛩 {new_state}", "#2196F3")
             self.command_log.append_log("GCS", f"State: {new_state}", "#2196F3")
             tb.set_takeoff_state(new_state)
+            # Manual takeoff đang chạy → nút manual thành ABORT
             try:
-                tb.btn_takeoff.clicked.disconnect()
+                tb.btn_manual_takeoff.clicked.disconnect()
             except RuntimeError:
                 pass
-            tb.btn_takeoff.clicked.connect(self.flight_controller.abort)
+            tb.btn_manual_takeoff.clicked.connect(self.flight_controller.abort)
         else:
             tb.set_takeoff_state(new_state)
+            # NAV takeoff đang chạy → nút NAV thành ABORT
             try:
                 tb.btn_takeoff.clicked.disconnect()
             except RuntimeError:

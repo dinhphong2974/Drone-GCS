@@ -1,100 +1,51 @@
-# DroneGCS — Nhật Ký Phát Triển (Development Log)
+# DroneGCS — Session Memory
 
-> File này được tự động cập nhật sau mỗi lần sửa đổi code.
-> Mục đích: Theo dõi toàn bộ quá trình phát triển dự án.
+> Đọc file này khi bắt đầu chat mới để nắm ngữ cảnh nhanh.
 
----
+## Trạng Thái Hiện Tại (2026-05-03)
 
-## 2026-04-05 — Feature Update Lớn: Failsafe + Emergency UI + Mission Map
+- **Kiến trúc**: Single-screen Mission Control (Phase 4), PySide6
+- **Tests**: 128 passed, 3 xfailed (test_flight_logic + test_msp_noise_robustness)
+- **FC**: INAV 9.0.1 trên SpeedyBee F405 AIO — `receiver_type = MSP`
+- **Chưa test thực tế**: Manual takeoff flow, force_disarm khi đang bay
 
-### Tổng quan thay đổi
-Triển khai 5 nhóm tính năng lớn:
+## Bugs Đã Sửa
 
-1. **Hệ thống tracking** — Tạo file `memories.md` (file này)
-2. **ESP32 Failsafe chủ động** — ESP32 tự gửi RTH/Safe Land khi mất WiFi
-3. **Emergency Notification Overlay** — Bảng cảnh báo nổi + nút DISARM/Safe Land
-4. **Nâng cấp Takeoff** — Dialog nhập độ cao + GPS Position Hold
-5. **Mission Tab + OpenStreetMap** — Bản đồ tương tác, waypoint click, logic an toàn
-
-### Chi tiết thay đổi từng file
-
-| File | Hành động | Mô tả |
+| Bug | Fix | Phiên |
 |---|---|---|
-| `memories.md` | NEW | File tracking log phát triển |
-| `core/drone_state.py` | MODIFY | Thêm thuộc tính GPS (lat, lon, fix, sats, speed, home_lat, home_lon) |
-| `comm/msp_parser.py` | MODIFY | Thêm MSP_RAW_GPS (106), MSP_SET_WP (209), MSP_WP_GETINFO (20) |
-| `ESP32/main.py` | MODIFY | Thêm logic failsafe chủ động: build MSP frame, gửi RTH/Land qua UART |
-| `core/flight_controller.py` | MODIFY | Cập nhật AUX mapping (ARM=2000, ALTHOLD+POSHOLD, Safe Land AUX3, RTH AUX4), thêm safe_land(), rth() |
-| `ui/emergency_overlay.py` | NEW | Widget overlay cảnh báo khẩn cấp (DISARM + Safe Land) |
-| `ui/manual_control_tab.py` | MODIFY | Đổi nút "Takeoff & Hold 3m" → "Takeoff" |
-| `ui/mission_tab.py` | REWRITE | Tích hợp OpenStreetMap (folium + QWebEngineView), waypoint tương tác, logic an toàn |
-| `comm/wifi_worker.py` | MODIFY | Thêm MSP_RAW_GPS vào polling, mock GPS data, gửi cấu hình failsafe |
-| `main.py` | MODIFY | Kết nối emergency overlay, takeoff dialog, mission logic, GPS data flow |
-| `AGENT.md` | MODIFY | Cập nhật tài liệu kiến trúc mới |
+| DISARM delay 10-20s | Repeated-send state machine (DISARMING/FORCE_DISARMING) | 04-28 |
+| ESP32 failsafe đóng socket | Giữ mở cho emergency override | 04-28 |
+| Channel RPYT→AETR | Đồng bộ GCS + ESP32 | 04-28 |
+| RSSI parse thiếu return | Thêm `result['rssi']` | 04-30 |
+| GPS multipath | Haversine guard 3m | 04-28 |
+| Rising edge NAV_WP | Giữ ANGLE→bung 2000 rising edge | 04-28 |
+| **ESP32 TCP coalescing** | Loop parse tất cả EM: frames trong buffer | **05-03** |
+| **_send_rc_emergency fallback** | Bỏ fallback send_command(), buộc emergency_queue | **05-03** |
+| **force_disarm race** | timer.stop() TRƯỚC khi đổi state | **05-03** |
+| **FORCE_DISARMING thiếu NAV_OFF** | Gửi NAV_OFF + DISARM mỗi tick | **05-03** |
+| **LeftToolbar icon tràn** | font-size 20→16px, padding:0, width 48→52px | **05-03** |
+| **EmergencyOverlay fade race** | Disconnect fade-out signal trước fade-in | **05-03** |
+| **EmergencyOverlay hide guard** | Guard isVisible() trước animate | **05-03** |
 
-### Quyết định thiết kế quan trọng
-- **AUX Channel Mapping**: AUX1=ARM, AUX2=Flight Mode, AUX3=Safe Land, AUX4=RTH
-- **Mission**: Dùng MSP_WP nạp waypoint xuống FC (INAV tự bay)
-- **Home Position**: Read-only từ FC (INAV tự chốt khi ARM)
-- **Distance Threshold**: 50m mặc định, có thể cấu hình trên UI
-- **ESP32 Failsafe**: Khi mất WiFi → gửi MSP_SET_RAW_RC với AUX4=2000 (RTH) liên tục
+## Ghi Nhớ Kỹ Thuật
 
-### Phần cứng
-- GPS + Compass: BZ 251 (đã được thêm vào hệ thống)
-- FC: SpeedyBee F405 AIO 40A (INAV firmware)
-- Khung: OddityRC XI35 Pro O4 3.5inch Cinewhoop
+- **BoxID SpeedyBee**: RTH=10, POSHOLD=11, FAILSAFE=27, NAV_WP=28 (KHÁC chuẩn INAV)
+- **AUX2=2000 chồng chéo 3 mode** (ALTHOLD+POSHOLD+WP) là ĐÚNG thiết kế
+- **LiDAR MTF-02**: Trust ≤1m, max 2.5m, giá trị âm = out of range
+- **NAV_OFF 300ms**: INAV từ chối DISARM khi NAV active → phải tắt NAV trước
+- **INAV MSP override**: Cần `receiver_type = MSP` HOẶC `msp_override_channels` bitmask + MSP_OVERRIDE mode
+- **MSP_SET_RAW_RC ≥5Hz**: Dưới 5Hz INAV revert về RC gốc (failsafe)
+- **Ground effect 3.5"**: Zone <1m, manual takeoff bật NAV sau 2m
+- **EM: prefix**: ESP32 xóa UART buffer + gửi tức thì + tắt failsafe
+- **send_emergency_command**: PHẢI dùng emergency queue, KHÔNG fallback sang command queue
 
----
+## UI Updates (05-03)
 
-## 2026-04-05 (2) — Bug Fix: QWebChannel Warning + Leaflet Race Condition
+- **LeftToolbar**: Thêm nút Manual Takeoff (M▲), xanh dương, nằm giữa NAV▲ và RTH⌂
+- **EmergencyOverlay**: Fix fade race, button vẫn accessible khi overlay đang transition
 
-### Lỗi đã sửa
+## Việc Cần Làm Tiếp
 
-| Bug | Nguyên nhân gốc | Cách sửa |
-|---|---|---|
-| Cảnh báo rác "Property has no notify signal" | Đăng ký MissionTab (QWidget) trực tiếp vào QWebChannel → Qt quét hàng trăm property nội bộ | Tạo class `WebBridge(QObject)` riêng biệt, chỉ expose 1 Slot `on_map_clicked` |
-| `js: Uncaught ReferenceError: L is not defined` | JavaScript chạy trước khi Leaflet load xong (race condition) | Dùng `loadFinished.connect(_on_map_loaded)` + cờ `map_is_ready`, inject JS qua `runJavaScript()` trong callback |
-
-### Thay đổi phụ
-- NAV POSHOLD: Dải kích hoạt điều chỉnh thành 1900-2100 trên INAV Configurator
-- Comment `AUX_NAV_ALTHOLD_POSHOLD` cập nhật phản ánh dải mới
-
----
-
-## 2026-04-05 (3) — Bug Fix: Mô hình 3D không đồng bộ góc nghiêng
-
-### Nguyên nhân gốc
-`update_telemetry_ui()` trong `main.py` cập nhật label text và gọi `widget_3d_attitude.update_attitude()`
-nhưng **KHÔNG ghi** `roll/pitch/yaw` vào `drone_state`. Khi chỉ có 1 trong 3 trường được gửi
-(ví dụ chỉ có `roll`), widget nhận giá trị cũ từ `_roll/_pitch/_yaw` nội bộ thay vì từ `drone_state`.
-
-### Lỗi đã sửa
-
-| File | Bug | Fix |
-|---|---|---|
-| `main.py` | `drone_state.roll/pitch/yaw` không bao giờ được ghi | Thêm `self.drone_state.roll = data["roll"]` etc. trước khi cập nhật widget |
-| `main.py` | `drone_state.voltage/current` không bao giờ được ghi | Thêm `self.drone_state.voltage = v` và `self.drone_state.current` |
-| `main.py` | Widget 3D dùng `data.get()` với fallback cũ thay vì `drone_state` | Đổi thành `self.drone_state.roll/pitch/yaw` — single source of truth |
-| `attitude_3d_widget.py` | Panda3D init có thể fail silent (không try/except) | Bọc `showEvent` trong `try/except`, in lỗi ra console nếu fail |
-
----
-
-## 2026-04-10 — Firmware Audit & Critical Emergency Bug Fix
-
-### Tổng quan
-Sau một cuộc kiểm tra sâu (audit) bằng các phương pháp `@firmware-analyst` và `@systematic-debugging`, đã phát hiện 7 lỗi (bao gồm 2 lỗi Critical) trong firmware ESP32 cũ khiến cho lệnh khẩn cấp (DISARM/Safe Land) bị kẹt hoặc bỏ qua khi drone đang cất cánh.
-
-### Lỗi đã sửa & Thay đổi cấu trúc
-
-| Bug / Issue | Nguyên nhân gốc | Cách sửa |
-|---|---|---|
-| Failsafe chặn lệnh Emergency (CRITICAL) | `conn.close()` bị gọi ngay khi mất tín hiệu WiFi 1.5s, làm đứt TCP dẫn đến GCS mất quyền gửi lệnh khẩn cấp khi WiFi chập chờn. | Viết lại vòng lặp ESP32: **KHÔNG đóng socket** trong trạng thái failsafe. Socket chỉ đóng khi GCS `send()` bị lỗi thực sự ≥10 lần liên tiếp. |
-| Race condition khi nhận Emergency (CRITICAL) | Nếu lệnh khẩn cấp rơi vào lúc `recv()` timeout/chờ, socket bị đóng ở đoạn failsafe. | Tách đôi logic đọc TCP và kiểm tra timeout; đảm bảo `recv()` chỉ bắt `OSError` do non-blocking socket mà không ngắt quyền tiếp nhận. |
-| Không đồng nhất Channel Order (HIGH) | ESP32 dùng RPYT, trong khi GCS dùng AETR. Điều này có thể khiến lệnh Throttle/Yaw bị lộn vị trí khi RTH. | Sửa ESP32 constants thành chuẩn **AETR** (`[Roll, Pitch, Throttle, Yaw, AUX1-4]`) để khớp đồng nhất 100% với GCS và INAV. |
-| Thiếu cơ chế ưu tiên lệnh (HIGH) | GCS gửi `force_disarm()` bị chặn sau queue TCP. | Thêm prefix giao thức `"EM:"`. ESP32 khi nhận `"EM:"` sẽ xóa rác trong UART buffer UART, gửi frame khẩn cấp ngay lập tức và cưỡng chế tắt failsafe state. |
-
-### Cập nhật Documentation
-- `AGENT.md` đã được update toàn diện cho ngày `2026-04-10`.
-- Bổ sung cấu trúc luồng Emergency Protocol.
-- Thêm section **Đề xuất Skills** để các AI Agents tương lai biết gọi đúng công cụ (e.g. `@firmware-analyst`, `@systematic-debugging`, v.v.).
-- Mật khẩu WiFi Access Point đổi từ `password123` sang an toàn hơn: `DroneGCS@2026!`.
+- [ ] Test thực tế với phần cứng (HIL)
+- [ ] Validate manual takeoff: ANGLE idle → throttle ramp → NAV switch
+- [ ] Check `receiver_type` và `disarm_kill_switch` trên CLI

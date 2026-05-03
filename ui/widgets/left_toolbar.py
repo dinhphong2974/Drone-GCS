@@ -1,8 +1,11 @@
 """
-LeftToolbar — Thanh công cụ dọc 48px bên trái với các nút điều khiển.
+LeftToolbar — Thanh công cụ dọc 52px bên trái với các nút điều khiển.
 
-Chứa: Toggle panel, Locate, ARM/DISARM, Takeoff, RTH, Settings.
-Các nút flight control (ARM, Takeoff, RTH) được GCSApp kết nối signal.
+Chứa: Toggle panel, Locate, ARM/DISARM, NAV Takeoff, Manual Takeoff, RTH, Settings.
+Các nút flight control (ARM, Takeoff, Manual Takeoff, RTH) được GCSApp kết nối signal.
+
+FIX F6: Tăng toolbar width 48→52px, cố định icon font-size tránh tràn,
+         thêm QSizePolicy prevent emoji overflow trên Windows.
 """
 
 from PySide6.QtWidgets import (
@@ -14,14 +17,14 @@ from PySide6.QtGui import QFont, QCursor
 
 class LeftToolbar(QWidget):
     """
-    Thanh icon dọc cố định 48px — chứa quick-action buttons.
+    Thanh icon dọc cố định 52px — chứa quick-action buttons.
 
     Signals:
         locate_clicked: Yêu cầu center map vào drone
         toggle_left_panel: Yêu cầu ẩn/hiện left panel
 
     Widget ownership cho GCSApp:
-        btn_arm, btn_takeoff, btn_rth — flight control
+        btn_arm, btn_takeoff, btn_manual_takeoff, btn_rth — flight control
         btn_settings — mở ConfigTab dialog
     """
 
@@ -33,10 +36,10 @@ class LeftToolbar(QWidget):
     DARK_BG = "#080c14"
     BORDER_COLOR = "#1a2332"
     HOVER_GLOW = "rgba(0, 255, 136, 0.15)"
-    ICON_SIZE = 20
+    ICON_SIZE = 16         # FIX F6: 20→16px tránh emoji tràn nút 40px
     BTN_SIZE = 40
 
-    # Base button style
+    # Base button style — icon buttons
     _BTN_STYLE = """
         QPushButton {{
             background-color: transparent;
@@ -48,6 +51,7 @@ class LeftToolbar(QWidget):
             min-height: {btn_size}px;
             max-width: {btn_size}px;
             max-height: {btn_size}px;
+            padding: 0px;
         }}
         QPushButton:hover {{
             background-color: {hover};
@@ -64,12 +68,13 @@ class LeftToolbar(QWidget):
             color: #ff4444;
             border: 1px solid rgba(255, 68, 68, 0.3);
             border-radius: 6px;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: bold;
             min-width: {btn_size}px;
             min-height: {btn_size}px;
             max-width: {btn_size}px;
             max-height: {btn_size}px;
+            padding: 0px;
         }}
         QPushButton:hover {{
             background-color: rgba(255, 68, 68, 0.3);
@@ -96,6 +101,7 @@ class LeftToolbar(QWidget):
             min-height: {btn_size}px;
             max-width: {btn_size}px;
             max-height: {btn_size}px;
+            padding: 0px;
         }}
         QPushButton:hover {{
             background-color: rgba(255, 152, 0, 0.3);
@@ -122,6 +128,7 @@ class LeftToolbar(QWidget):
             min-height: {btn_size}px;
             max-width: {btn_size}px;
             max-height: {btn_size}px;
+            padding: 0px;
         }}
         QPushButton:hover {{
             background-color: rgba(0, 255, 136, 0.25);
@@ -137,9 +144,37 @@ class LeftToolbar(QWidget):
         }}
     """
 
+    # FIX F5: Thêm style cho nút Manual Takeoff (xanh dương)
+    _BTN_MANUAL_STYLE = """
+        QPushButton {{
+            background-color: rgba(33, 150, 243, 0.15);
+            color: #2196F3;
+            border: 1px solid rgba(33, 150, 243, 0.3);
+            border-radius: 6px;
+            font-size: {icon_size}px;
+            min-width: {btn_size}px;
+            min-height: {btn_size}px;
+            max-width: {btn_size}px;
+            max-height: {btn_size}px;
+            padding: 0px;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(33, 150, 243, 0.3);
+            border: 1px solid rgba(33, 150, 243, 0.6);
+        }}
+        QPushButton:pressed {{
+            background-color: rgba(33, 150, 243, 0.4);
+        }}
+        QPushButton:disabled {{
+            background-color: rgba(80, 80, 80, 0.2);
+            color: #555;
+            border: 1px solid #333;
+        }}
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(48)
+        self.setFixedWidth(52)  # FIX F6: 48→52px tránh icon bị cắt
         self.setObjectName("leftToolbar")
         self._setup_ui()
 
@@ -154,11 +189,10 @@ class LeftToolbar(QWidget):
         self.btn_menu.clicked.connect(self.toggle_left_panel.emit)
         layout.addWidget(self.btn_menu)
 
-        self.btn_locate = self._make_btn("🏠", "Định vị Drone trên bản đồ")
-        self.btn_locate.clicked.connect(self.locate_clicked.emit)
+        self.btn_locate = self._make_btn("⌂", "Định vị Drone trên bản đồ")
         layout.addWidget(self.btn_locate)
 
-        self.btn_waypoints = self._make_btn("📍", "Chế độ Waypoint")
+        self.btn_waypoints = self._make_btn("◉", "Chế độ Waypoint")
         layout.addWidget(self.btn_waypoints)
 
         self.btn_settings = self._make_btn("⚙", "Cài đặt")
@@ -167,7 +201,7 @@ class LeftToolbar(QWidget):
         # ── Separator ──
         layout.addWidget(self._separator())
 
-        # ── Flight Control Buttons (đặc biệt, to hơn) ──
+        # ── Flight Control Buttons ──
         self.btn_arm = self._make_btn(
             "ARM", "ARM / DISARM drone",
             style_template=self._BTN_DANGER_STYLE
@@ -175,14 +209,23 @@ class LeftToolbar(QWidget):
         self.btn_arm.setFont(QFont("Consolas", 8, QFont.Bold))
         layout.addWidget(self.btn_arm)
 
+        # NAV Takeoff — cất cánh tự động bằng ALTHOLD+POSHOLD
         self.btn_takeoff = self._make_btn(
-            "🚀", "Cất cánh tự động",
+            "▲", "NAV Takeoff — Cất cánh tự động",
             style_template=self._BTN_ACTION_STYLE
         )
         layout.addWidget(self.btn_takeoff)
 
+        # FIX F5: Manual Takeoff — cất cánh thủ công bằng throttle ramp
+        self.btn_manual_takeoff = self._make_btn(
+            "M▲", "Manual Takeoff — Cất cánh thủ công (ANGLE mode)",
+            style_template=self._BTN_MANUAL_STYLE
+        )
+        self.btn_manual_takeoff.setFont(QFont("Consolas", 8, QFont.Bold))
+        layout.addWidget(self.btn_manual_takeoff)
+
         self.btn_rth = self._make_btn(
-            "🏡", "Return To Home",
+            "⌂", "Return To Home",
             style_template=self._BTN_SUCCESS_STYLE
         )
         layout.addWidget(self.btn_rth)
@@ -191,7 +234,7 @@ class LeftToolbar(QWidget):
         layout.addStretch(1)
 
         # ── Disconnect button ở cuối ──
-        self.btn_disconnect = QPushButton("🔌")
+        self.btn_disconnect = QPushButton("⏻")
         self.btn_disconnect.setToolTip("Kết nối / Ngắt kết nối")
         self.btn_disconnect.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self.btn_disconnect.setCursor(QCursor(Qt.PointingHandCursor))
@@ -212,7 +255,7 @@ class LeftToolbar(QWidget):
         """)
 
     def _make_btn(self, text: str, tooltip: str, style_template: str = None) -> QPushButton:
-        """Tạo nút icon chuẩn 40×40px."""
+        """Tạo nút icon chuẩn 40×40px với padding tránh overflow."""
         btn = QPushButton(text)
         btn.setToolTip(tooltip)
         btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
@@ -232,7 +275,7 @@ class LeftToolbar(QWidget):
         """Tạo separator ngang mỏng."""
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setFixedWidth(36)
+        sep.setFixedWidth(40)
         sep.setStyleSheet(f"color: {self.BORDER_COLOR};")
         return sep
 
@@ -264,26 +307,49 @@ class LeftToolbar(QWidget):
         States: IDLE, TAKING_OFF, HOLDING, MANUAL_*, ABORTING
         """
         if state == "IDLE":
-            self.btn_takeoff.setText("🚀")
-            self.btn_takeoff.setToolTip("Cất cánh tự động")
+            self.btn_takeoff.setText("▲")
+            self.btn_takeoff.setToolTip("NAV Takeoff — Cất cánh tự động")
             self.btn_takeoff.setStyleSheet(
                 self._BTN_ACTION_STYLE.format(
                     icon_size=self.ICON_SIZE, btn_size=self.BTN_SIZE
                 )
             )
             self.btn_takeoff.setEnabled(True)
+            # Reset manual takeoff button
+            self.btn_manual_takeoff.setText("M▲")
+            self.btn_manual_takeoff.setToolTip("Manual Takeoff — Cất cánh thủ công")
+            self.btn_manual_takeoff.setStyleSheet(
+                self._BTN_MANUAL_STYLE.format(
+                    icon_size=self.ICON_SIZE, btn_size=self.BTN_SIZE
+                )
+            )
+            self.btn_manual_takeoff.setEnabled(True)
+        elif state.startswith("MANUAL_"):
+            # Manual takeoff đang chạy → nút manual thành ABORT
+            self.btn_manual_takeoff.setText("✕")
+            self.btn_manual_takeoff.setToolTip("ABORT — Dừng manual takeoff")
+            self.btn_manual_takeoff.setStyleSheet(
+                self._BTN_DANGER_STYLE.format(
+                    icon_size=self.ICON_SIZE, btn_size=self.BTN_SIZE
+                )
+            )
+            # Disable NAV takeoff khi manual đang chạy
+            self.btn_takeoff.setEnabled(False)
         else:
-            # Đang bay → nút ABORT
-            self.btn_takeoff.setText("⛔")
+            # Đang bay (NAV takeoff) → nút NAV thành ABORT
+            self.btn_takeoff.setText("✕")
             self.btn_takeoff.setToolTip("ABORT — Dừng bay ngay lập tức")
             self.btn_takeoff.setStyleSheet(
                 self._BTN_DANGER_STYLE.format(
                     icon_size=self.ICON_SIZE, btn_size=self.BTN_SIZE
                 )
             )
+            # Disable manual takeoff khi NAV đang chạy
+            self.btn_manual_takeoff.setEnabled(False)
 
     def set_enabled_flight_controls(self, enabled: bool):
         """Bật/tắt tất cả nút flight control."""
         self.btn_arm.setEnabled(enabled)
         self.btn_takeoff.setEnabled(enabled)
+        self.btn_manual_takeoff.setEnabled(enabled)
         self.btn_rth.setEnabled(enabled)

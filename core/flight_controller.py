@@ -347,9 +347,10 @@ class FlightController(QObject):
         3. Gửi NHIỀU frame liên tiếp qua emergency queue
         4. Bật timer lại ở state FORCE_DISARMING để gửi DISARM liên tục
         """
-        # 1. STOP state machine NGAY LẬP TỨC
-        self._state = "FORCE_DISARMING"
+        # 1. STOP state machine NGAY LẬP TỨC — timer PHẢI stop trước khi đổi state
+        #    Tránh edge case: _tick() đọc state mới trong khi timer chưa stop
         self._timer.stop()
+        self._state = "FORCE_DISARMING"
 
         if not self._worker:
             self._state = "IDLE"
@@ -1100,12 +1101,29 @@ class FlightController(QObject):
         FIX: Cùng cơ chế repeated-send như DISARMING, nhưng dùng emergency queue
         để bypass mọi lệnh thường đang chờ. Đây là lệnh cao nhất, không thể bị preempt.
 
+        FIX F4: Mỗi tick gửi NAV_OFF trước rồi DISARM sau. INAV có thể chưa thoát
+        NAV mode hoàn toàn từ frame đầu tiên → gửi NAV_OFF lặp lại đảm bảo an toàn.
+
         Luồng:
-        1. Mỗi tick: gửi DISARM frame qua emergency queue (ưu tiên cao nhất)
+        1. Mỗi tick: gửi NAV_OFF + DISARM qua emergency queue
         2. Nếu is_armed == False → DISARM thành công → IDLE
         3. Nếu timeout 5s → cảnh báo nghiêm trọng
         """
-        # Gửi DISARM khẩn cấp qua emergency queue
+        # Frame 1: Tắt NAV modes (INAV có thể chưa thoát NAV)
+        nav_off = [
+            self.RC_CENTER,         # Roll
+            self.RC_CENTER,         # Pitch
+            self.THROTTLE_MIN,      # Throttle — cắt ga
+            self.RC_CENTER,         # Yaw
+            self.AUX_ARM,           # AUX1 = vẫn ARM (chưa disarm)
+            self.AUX_ANGLE,         # AUX2 = ANGLE (tắt NAV modes)
+            self.AUX_SAFE_LAND_OFF, # AUX3 = Safe Land OFF
+            self.AUX_RTH_OFF,       # AUX4 = RTH OFF
+        ]
+        self._channels = nav_off
+        self._send_rc_emergency()
+
+        # Frame 2: DISARM (AUX1=1000)
         self._channels = self._safe_channels()
         self._send_rc_emergency()
 
@@ -1128,7 +1146,6 @@ class FlightController(QObject):
             return
 
         # Thông báo tiến trình
-        elapsed = time.time() - self._disarm_start_time
         remaining = max(0.0, self.DISARM_TIMEOUT_S - elapsed)
         self.status_update.emit(f"⛔ FORCE DISARM... ({remaining:.1f}s còn lại)")
 
@@ -1349,10 +1366,9 @@ class FlightController(QObject):
         frame = self._parser.pack_set_raw_rc(self._channels)
         # Gắn prefix EM: để ESP32 ưu tiên xử lý lệnh khẩn cấp
         emergency_frame = b'EM:' + frame
-        if hasattr(self._worker, 'send_emergency_command'):
-            self._worker.send_emergency_command(emergency_frame)
-        else:
-            self._worker.send_command(emergency_frame)
+        # FIX F2: Bỏ fallback sang send_command() — emergency PHẢI đi qua emergency_queue
+        # Fallback cũ đưa vào command_queue thường → delay vài chục ms → nguy hiểm
+        self._worker.send_emergency_command(emergency_frame)
 
     def _safe_channels(self) -> list[int]:
         """

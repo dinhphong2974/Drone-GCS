@@ -156,6 +156,12 @@ class EmergencyOverlay(QWidget):
 
         self.lbl_mode_running.setText(f"⚠️ {mode_name} is running")
 
+        # FIX F7a: Nếu đang fade-out, phải disconnect finished signal trước
+        #          Không thì _on_fade_out_done chạy → ẩn overlay → user mất nút emergency
+        if self._fade_out_connected:
+            self._fade_anim.finished.disconnect(self._on_fade_out_done)
+            self._fade_out_connected = False
+
         # Đặt vị trí góc dưới phải của cửa sổ cha
         self._update_position()
 
@@ -171,6 +177,10 @@ class EmergencyOverlay(QWidget):
 
     def hide_overlay(self):
         """Ẩn overlay với animation fade-out."""
+        # FIX F7b: Guard — không animate nếu đã ẩn
+        if not self.isVisible():
+            return
+
         # Animation fade-out
         self._fade_anim.stop()
         self._fade_anim.setStartValue(self._opacity_effect.opacity())
