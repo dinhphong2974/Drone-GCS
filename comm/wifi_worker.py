@@ -73,7 +73,8 @@ class WifiWorker(QThread):
         self._parser = MSPParser()
 
         # Queue nhận lệnh từ UI thread (thread-safe)
-        self._command_queue: Queue = Queue()
+        # Giới hạn 10 lệnh — tránh tích lũy vô hạn khi mất kết nối
+        self._command_queue: Queue = Queue(maxsize=10)
 
         # Emergency queue — ưu tiên cao nhất, được drain trước command_queue
         self._emergency_queue: Queue = Queue()
@@ -117,11 +118,18 @@ class WifiWorker(QThread):
         Được gọi từ FlightController (Main Thread).
         Worker thread sẽ lấy và gửi qua TCP ở vòng lặp tiếp theo.
 
+        Nếu queue đầy, bỏ lệnh cũ nhất (drone chỉ cần lệnh mới nhất).
+
         Args:
             data: Frame MSP đã đóng gói (output của MSPParser.pack_msg)
                   hoặc lệnh cấu hình failsafe (VD: "FS:rth")
         """
-        self._command_queue.put(data)
+        if self._command_queue.full():
+            try:
+                self._command_queue.get_nowait()  # Bỏ lệnh cũ nhất
+            except Empty:
+                pass
+        self._command_queue.put_nowait(data)
 
     def send_emergency_command(self, data: bytes):
         """
@@ -291,6 +299,7 @@ class WifiWorker(QThread):
 
     def _drain_command_queue(self):
         """Gửi lệnh: emergency queue trước, command queue sau."""
+        sent = 0
         # Priority 1: Emergency commands (ưu tiên cao nhất)
         while True:
             try:
@@ -309,6 +318,7 @@ class WifiWorker(QThread):
                 cmd_data = self._command_queue.get_nowait()
                 if self._client and self._client.is_connected:
                     self._client.send(cmd_data)
+                sent += 1
             except Empty:
                 break
 

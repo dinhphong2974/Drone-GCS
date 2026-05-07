@@ -93,5 +93,67 @@ class DroneState:
         return (avg_lat, avg_lon)
 
     def reset(self):
-        """Reset toàn bộ trạng thái về mặc định (khi mất kết nối)."""
-        self.__init__()
+        """Reset toàn bộ trạng thái về mặc định (khi mất kết nối).
+
+        Viết reset thủ công thay vì gọi self.__init__() để:
+        - Tránh stale reference nếu ai đó giữ ref cũ tới self.motors
+        - Tránh bug nếu __init__ được thêm tham số trong tương lai
+        - An toàn với sub-class override
+        """
+        # ── Từ MSP_ANALOG ──
+        self.voltage = 0.0
+        self.current = 0.0
+
+        # ── Từ MSP_ATTITUDE ──
+        self.roll = 0.0
+        self.pitch = 0.0
+        self.yaw = 0.0
+
+        # ── Từ MSP_ALTITUDE ──
+        self.altitude = 0.0
+        self.vario = 0.0
+
+        # ── Từ MSP_STATUS ──
+        self.is_armed = False
+        self.flight_mode_flags = 0
+
+        # ── Từ MSP_MOTOR ──
+        self.motors[:] = [1000, 1000, 1000, 1000]  # In-place reset
+
+        # ── Từ MSP_RAW_GPS ──
+        self.gps_fix_type = 0
+        self.gps_num_sat = 0
+        self.latitude = 0.0
+        self.longitude = 0.0
+        self.gps_altitude = 0.0
+        self.ground_speed = 0.0
+        self.ground_course = 0.0
+        self.gps_hdop = 0.0
+
+        # ── Home ──
+        self.home_lat = 0.0
+        self.home_lon = 0.0
+        self.has_home = False
+
+        # ── Từ MSP_SONAR_ALTITUDE (LiDAR MTF-02) ──
+        self.surface_altitude = -1.0
+        self.surface_quality = 0
+        self.has_valid_surface = False
+
+        # ── Từ MSP_STATUS_EX (Sensor Health) ──
+        self.sensor_opflow = False
+        self.sensor_rangefinder = False
+        self.sensor_mag = False
+        self.sensor_gps = False
+        self.sensor_baro = False
+        self.system_load = 0
+
+        # ── Kết nối ──
+        self.is_connected = False
+        self.ping_rtt_ms = -1
+
+        # ── Mode bay ──
+        self.active_mode_name = ""
+
+        # ── Lịch sử GPS ──
+        self._gps_history.clear()
