@@ -111,8 +111,11 @@ class MSPParser:
         """
         Đóng gói lệnh MSP_SET_RAW_RC gửi 8 kênh RC xuống Flight Controller.
 
-        Thứ tự kênh INAV: [Roll, Pitch, Yaw, Throttle, AUX1, AUX2, AUX3, AUX4]
+        Thứ tự kênh AETR: [Roll, Pitch, Throttle, Yaw, AUX1, AUX2, AUX3, AUX4]
         Mỗi kênh là uint16 LE, range 1000-2000μs.
+
+        Defense-in-depth: Clamp tất cả giá trị vào [1000, 2000] trước khi pack.
+        Nếu caller quên clamp, parser vẫn bảo vệ ESC/motor.
 
         Args:
             channels: List 8 giá trị kênh RC (1000-2000μs)
@@ -122,7 +125,12 @@ class MSPParser:
         """
         if len(channels) != 8:
             raise ValueError(f"Cần đúng 8 kênh RC, nhận được {len(channels)}")
-        payload = struct.pack('<8H', *channels)
+        # Defense-in-depth: Clamp PWM tại parser level
+        clamped = [max(1000, min(2000, int(ch))) for ch in channels]
+        if clamped != [int(ch) for ch in channels]:
+            print(f"[MSPParser] WARNING: PWM values clamped! "
+                  f"Original={[int(ch) for ch in channels]}, Clamped={clamped}")
+        payload = struct.pack('<8H', *clamped)
         return self.pack_msg(MSP_SET_RAW_RC, payload)
 
     def pack_set_wp(self, wp_no: int, lat: float, lon: float, alt_cm: int,

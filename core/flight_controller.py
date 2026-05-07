@@ -1343,9 +1343,16 @@ class FlightController(QObject):
     # ══════════════════════════════════════════════
 
     def _send_rc(self):
-        """Gửi MSP_SET_RAW_RC với giá trị kênh hiện tại qua WifiWorker."""
+        """Gửi MSP_SET_RAW_RC với giá trị kênh hiện tại qua WifiWorker.
+
+        Defense-in-depth: Clamp tất cả 8 kênh vào [1000, 2000] TRƯỚC khi
+        gọi MSPParser.pack_set_raw_rc(). Đây là lớp bảo vệ đầu tiên —
+        parser-level clamp là lớp thứ hai (safety net).
+        """
         if not self._worker:
             return
+        # Clamp tại controller level (lớp 1/2) — bảo vệ trước khi đóng gói
+        self._channels = [max(1000, min(2000, int(ch))) for ch in self._channels]
         frame = self._parser.pack_set_raw_rc(self._channels)
         self._worker.send_command(frame)
 
@@ -1360,9 +1367,13 @@ class FlightController(QObject):
         - ESP32 xóa UART input buffer (discard response cũ)
         - Chuyển tiếp MSP frame ngay lập tức xuống FC
         - Tắt failsafe state để không ghi đè lệnh emergency
+
+        Defense-in-depth: Clamp channels trước khi pack (như _send_rc).
         """
         if not self._worker:
             return
+        # Clamp tại controller level (lớp 1/2)
+        self._channels = [max(1000, min(2000, int(ch))) for ch in self._channels]
         frame = self._parser.pack_set_raw_rc(self._channels)
         # Gắn prefix EM: để ESP32 ưu tiên xử lý lệnh khẩn cấp
         emergency_frame = b'EM:' + frame

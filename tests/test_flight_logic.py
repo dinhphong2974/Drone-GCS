@@ -705,3 +705,96 @@ def test_nav_off_delay_constant():
     """31. Hằng số NAV_OFF_DELAY_S phải là 300ms."""
     fc = FlightController(MockDroneState())
     assert fc.NAV_OFF_DELAY_S == 0.3
+
+
+# ══════════════════════════════════════════════
+# TESTS v5 — PWM CLAMP (Defense-in-depth)
+# ══════════════════════════════════════════════
+
+def test_parser_clamps_pwm_values():
+    """32. pack_set_raw_rc() phải clamp giá trị ngoài dải 1000-2000.
+
+    Defense-in-depth: Dù caller gửi giá trị sai, parser vẫn bảo vệ
+    ESC/motor bằng cách giới hạn vào [1000, 2000].
+    """
+    parser = MSPParser()
+    # Gửi giá trị ngoài dải: 0, 999, 2001, 3000
+    bad_channels = [0, 999, 2001, 3000, 500, 2500, 1500, 1500]
+    result = parser.pack_set_raw_rc(bad_channels)
+
+    # Parse lại payload để kiểm tra
+    payload = result[5:21]  # Skip header(3) + size(1) + cmd(1)
+    clamped = list(struct.unpack('<8H', payload))
+
+    assert clamped[0] == 1000   # 0 → 1000
+    assert clamped[1] == 1000   # 999 → 1000 (đúng: min(2000,max(1000,999)) = 1000)
+    assert clamped[2] == 2000   # 2001 → 2000
+    assert clamped[3] == 2000   # 3000 → 2000
+    assert clamped[4] == 1000   # 500 → 1000
+    assert clamped[5] == 2000   # 2500 → 2000
+    assert clamped[6] == 1500   # Giữ nguyên
+    assert clamped[7] == 1500   # Giữ nguyên
+
+
+def test_controller_clamps_before_parser():
+    """33. _send_rc() phải clamp channels trước khi gọi parser.
+
+    Lớp 1 (controller) clamp → Lớp 2 (parser) clamp.
+    Sau _send_rc(), self._channels phải đã trong [1000, 2000].
+    """
+    fc = FlightController(MockDroneState())
+    fc._worker = MockWorker()
+
+    # Set channels ngoài dải
+    fc._channels = [800, 2200, 1500, 1500, 1000, 2000, 1000, 1000]
+    fc._send_rc()
+
+    # Channels phải đã được clamp (in-place)
+    assert fc._channels[0] == 1000   # 800 → 1000
+    assert fc._channels[1] == 2000   # 2200 → 2000
+    assert fc._channels[2] == 1500   # Giữ nguyên
+
+
+def test_utils_clamp_function():
+    """34. Hàm clamp() và clamp_pwm() trong core/utils.py hoạt động đúng."""
+    from core.utils import clamp, clamp_pwm
+
+    # clamp() generic
+    assert clamp(5, 0, 10) == 5
+    assert clamp(-1, 0, 10) == 0
+    assert clamp(15, 0, 10) == 10
+    assert clamp(0.5, 0.0, 1.0) == 0.5
+
+    # clamp_pwm() chuyên cho PWM
+    assert clamp_pwm(1500) == 1500
+    assert clamp_pwm(0) == 1000
+    assert clamp_pwm(999) == 1000
+    assert clamp_pwm(2001) == 2000
+    assert clamp_pwm(3000) == 2000
+    assert clamp_pwm(1000.7) == 1000  # float → int
+
+
+def test_dual_layer_clamp_consistency():
+    """35. Dual-layer: controller + parser đều clamp → kết quả nhất quán.
+
+    Giá trị ngoài dải phải được clamp bởi controller (lớp 1),
+    rồi parser (lớp 2) không thay đổi thêm vì đã trong dải.
+    """
+    fc = FlightController(MockDroneState())
+    worker = MockWorker()
+    fc._worker = worker
+
+    # Set channels cực đoan
+    fc._channels = [0, 5000, -100, 99999, 1000, 2000, 1500, 1500]
+    fc._send_rc()
+
+    # Controller đã clamp
+    assert fc._channels == [1000, 2000, 1000, 2000, 1000, 2000, 1500, 1500]
+
+    # Frame được gửi qua worker → parse lại kiểm tra
+    assert len(worker.commands) == 1
+    frame = worker.commands[0]
+    payload = frame[5:21]
+    values = list(struct.unpack('<8H', payload))
+    assert values == [1000, 2000, 1000, 2000, 1000, 2000, 1500, 1500]
+

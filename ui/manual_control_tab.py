@@ -72,17 +72,19 @@ class ManualControlTab(QWidget):
         layout.addStretch()
 
     def _create_rc_sliders(self):
-        """Tạo 6 slider RC: Throttle, Roll, Pitch, Yaw, AUX1, AUX2."""
-        self.grp_rc_sliders = QGroupBox("RC Channels")
+        """Tạo 8 slider RC: Throttle, Roll, Pitch, Yaw, AUX1-4 (khớp MSP_SET_RAW_RC 8CH)."""
+        self.grp_rc_sliders = QGroupBox("RC Channels (AETR + AUX1-4)")
         grid = QGridLayout(self.grp_rc_sliders)
 
         slider_configs = [
-            ("lbl_throttle",    "Throttle", "slider_throttle", "val_throttle",    1000, 2000, 1000, 0),
-            ("lbl_roll_input",  "Roll",     "slider_roll",     "val_roll_input",  1000, 2000, 1500, 1),
-            ("lbl_pitch_input", "Pitch",    "slider_pitch",    "val_pitch_input", 1000, 2000, 1500, 2),
-            ("lbl_yaw_input",   "Yaw",      "slider_yaw",      "val_yaw_input",   1000, 2000, 1500, 3),
-            ("lbl_aux1",        "AUX1",     "slider_aux1",     "val_aux1",        1000, 2000, 1000, 4),
-            ("lbl_aux2",        "AUX2",     "slider_aux2",     "val_aux2",        1000, 2000, 1000, 5),
+            ("lbl_throttle",    "Throttle (CH3)", "slider_throttle", "val_throttle",    1000, 2000, 1000, 0),
+            ("lbl_roll_input",  "Roll (CH1)",     "slider_roll",     "val_roll_input",  1000, 2000, 1500, 1),
+            ("lbl_pitch_input", "Pitch (CH2)",    "slider_pitch",    "val_pitch_input", 1000, 2000, 1500, 2),
+            ("lbl_yaw_input",   "Yaw (CH4)",      "slider_yaw",      "val_yaw_input",   1000, 2000, 1500, 3),
+            ("lbl_aux1",        "AUX1 ARM (CH5)", "slider_aux1",     "val_aux1",        1000, 2000, 1000, 4),
+            ("lbl_aux2",        "AUX2 Mode (CH6)","slider_aux2",     "val_aux2",        1000, 2000, 1000, 5),
+            ("lbl_aux3",        "AUX3 Land (CH7)","slider_aux3",     "val_aux3",        1000, 2000, 1000, 6),
+            ("lbl_aux4",        "AUX4 RTH (CH8)", "slider_aux4",     "val_aux4",        1000, 2000, 1000, 7),
         ]
 
         for lbl_name, lbl_text, slider_name, val_name, min_v, max_v, default, row in slider_configs:
