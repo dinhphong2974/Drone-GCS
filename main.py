@@ -30,6 +30,9 @@ from ui.emergency_overlay import EmergencyOverlay
 from comm.wifi_worker import WifiWorker
 from core.drone_state import DroneState
 from core.flight_controller import FlightController
+from core.gamepad_controller import GamepadController
+from core.utils import clamp as _clamp
+from ui.map_panel import haversine_distance
 
 # ── Thông số pin Lipo 6S ──
 LIPO_6S_MIN_VOLTAGE = 19.8  # Điện áp rỗng (V)
@@ -237,6 +240,16 @@ class GCSApp(MainWindow):
         self.emergency_overlay.btn_emergency_disarm.clicked.connect(self._emergency_force_disarm)
         self.emergency_overlay.btn_emergency_safe_land.clicked.connect(self._emergency_force_safe_land)
 
+        # ── Gamepad page (virtual manual RC) ──
+        self._gamepad_ctrl = GamepadController()
+        self._gamepad_rc_timer = QTimer(self)
+        self._gamepad_rc_timer.setInterval(50)
+        self._gamepad_rc_timer.timeout.connect(self._tick_gamepad_rc)
+        self.gamepad_tab.enabled_changed.connect(self._on_gamepad_enabled_changed)
+        self.gamepad_tab.flight_mode_changed.connect(self._on_gamepad_flight_mode_changed)
+        self.gamepad_tab.speed_mode_changed.connect(self._on_gamepad_speed_mode_changed)
+        self.gamepad_tab.emergency_stop_requested.connect(self._on_gamepad_emergency_stop)
+
         # ── Kết nối nút điều khiển bay (từ LeftToolbar) ──
         tb = self.left_toolbar
         tb.btn_arm.clicked.connect(self.flight_controller.arm)
@@ -279,6 +292,7 @@ class GCSApp(MainWindow):
             self.worker.stop()
             self.worker.wait(3000)  # Chờ tối đa 3s cho thread dọn dẹp (tránh đơ)
             self.worker = None
+            self._gamepad_rc_timer.stop()
             self.drone_state.reset()
             self.set_ui_state_na()
             self.emergency_overlay.hide_overlay()
@@ -305,6 +319,8 @@ class GCSApp(MainWindow):
         self.worker.ping_updated.connect(self._on_ping_updated)
         self.worker.command_acked.connect(self._on_command_acked)
 
+        self.gamepad_tab.set_connection_status(True, f"Connected: {ip}:{port}")
+
         # Cấp worker cho FlightController để gửi lệnh
         self.flight_controller.set_worker(self.worker)
 
@@ -324,6 +340,7 @@ class GCSApp(MainWindow):
             self.setWindowTitle(f"Drone Ground Station - {message}")
             self.drone_state.is_connected = True
             self.enable_ui_components()
+            self.gamepad_tab.set_connection_status(True, message)
         else:
             # Guard: nếu toggle_connection() đã cleanup rồi → bỏ qua
             if self._disconnect_handled or self.worker is None:
@@ -332,6 +349,8 @@ class GCSApp(MainWindow):
             # Kết nối thất bại HOẶC bị đứt giữa chừng
             self.flight_controller.abort()
             self.flight_controller.set_worker(None)
+            self._gamepad_rc_timer.stop()
+            self.gamepad_tab.set_connection_status(False, "Disconnected")
             self.worker = None
             self.drone_state.reset()
             self.set_ui_state_na()
@@ -407,12 +426,26 @@ class GCSApp(MainWindow):
             self.drone_state.is_armed = data["is_armed"]
             self.top_bar.update_armed_status(data["is_armed"])
             self.left_toolbar.set_arm_state(data["is_armed"])
+            self.gamepad_tab.set_armed(data["is_armed"])
+            if data["is_armed"] and not self.flight_controller.is_active:
+                self.gamepad_tab.set_fc_state("ARMED")
+            elif not data["is_armed"]:
+                self.gamepad_tab.set_fc_state("IDLE")
+
+            disarm_in_progress = self.flight_controller.state in (
+                "FORCE_DISARMING",
+                "DISARMING",
+                "NAV_OFF_BEFORE_DISARM",
+            )
 
             if data["is_armed"]:
                 lp.val_armed.setText("ARMED")
                 lp.val_armed.setStyleSheet("color: #ff4444; font-weight: bold;")
 
-                if not self.emergency_overlay.isVisible():
+                if disarm_in_progress:
+                    if self.emergency_overlay.isVisible():
+                        self.emergency_overlay.hide_overlay()
+                elif not self.emergency_overlay.isVisible():
                     self.emergency_overlay.show_with_mode("Armed")
 
                 if not self.drone_state.has_home and self.drone_state.latitude != 0.0:
@@ -431,6 +464,23 @@ class GCSApp(MainWindow):
 
         if "flight_mode_flags" in data:
             self.drone_state.flight_mode_flags = data["flight_mode_flags"]
+
+        # ── Motor telemetry → Gamepad feedback ──
+        if "motor1" in data or "motor2" in data or "motor3" in data or "motor4" in data:
+            motors = [
+                int(data.get("motor1", 1000)),
+                int(data.get("motor2", 1000)),
+                int(data.get("motor3", 1000)),
+                int(data.get("motor4", 1000)),
+            ]
+            for index, motor_value in enumerate(motors, start=1):
+                motor_label = getattr(lp, f"val_motor{index}", None)
+                motor_bar = getattr(lp, f"bar_motor{index}", None)
+                if motor_label is not None:
+                    motor_label.setText(str(motor_value))
+                if motor_bar is not None:
+                    motor_bar.setValue(motor_value)
+            self.gamepad_tab.update_motor_feedback(motors)
 
         # ══════════════════════════════════════════════
         # CẬP NHẬT GPS DATA (từ GPS BZ 251 qua MSP_RAW_GPS)
@@ -557,7 +607,6 @@ class GCSApp(MainWindow):
 
         # BUG-3 FIX: Cập nhật khoảng cách drone → Home trên LeftPanel
         if self.drone_state.has_home and self.drone_state.latitude != 0.0:
-            from ui.map_panel import haversine_distance
             dist = haversine_distance(
                 self.drone_state.home_lat, self.drone_state.home_lon,
                 self.drone_state.latitude, self.drone_state.longitude
@@ -592,11 +641,15 @@ class GCSApp(MainWindow):
         self.top_bar.update_battery(0, 0)
         self.top_bar.update_connection(False)
         self.top_bar.update_flight_mode("⏸ IDLE", "#808098")
+        self.gamepad_tab.set_connection_status(False, "Disconnected")
+        self.gamepad_tab.set_armed(False)
+        self.gamepad_tab.update_rc_preview([1500] * 8, 1000, 0, lift_off=False)
 
         # Reset ping
         self.top_bar.lbl_ping.setText("🏓 ---ms")
         self.top_bar.lbl_ping.setStyleSheet("color: #808098;")
         self._ping_timeout_timer.stop()
+        self._gamepad_rc_timer.stop()
 
         # Disable flight controls
         self.left_toolbar.set_enabled_flight_controls(False)
@@ -619,6 +672,7 @@ class GCSApp(MainWindow):
         lp.val_gps_fix.setStyleSheet("color: #00ff88;")
 
         self.top_bar.update_connection(True)
+        self.gamepad_tab.set_connection_status(True, "Connected")
         self.command_log.append_log("SYS", "Đã kết nối thành công")
 
     # ══════════════════════════════════════════════
@@ -628,6 +682,7 @@ class GCSApp(MainWindow):
     def closeEvent(self, event):
         """Đảm bảo ngắt kết nối an toàn khi người dùng đóng cửa sổ."""
         self._ping_timeout_timer.stop()
+        self._gamepad_rc_timer.stop()
         if self.flight_controller.is_active:
             self.flight_controller.abort()
         if self.worker:
@@ -747,9 +802,14 @@ class GCSApp(MainWindow):
         if mode_name:
             self.emergency_overlay.show_with_mode(mode_name)
             self.drone_state.active_mode_name = mode_name
+            self.gamepad_tab.set_fc_state(mode_name)
+            if self.gamepad_tab.is_gamepad_enabled():
+                self.gamepad_tab.set_blocked_reason(f"Autopilot active: {mode_name}")
         else:
             self.emergency_overlay.hide_overlay()
             self.drone_state.active_mode_name = ""
+            self.gamepad_tab.set_fc_state("IDLE" if not self.drone_state.is_armed else "ARMED")
+            self.gamepad_tab.set_blocked_reason("")
 
     def _on_ping_updated(self, rtt_ms: int):
         """Slot: Nhận RTT mới từ WifiWorker."""
@@ -770,6 +830,8 @@ class GCSApp(MainWindow):
             "EM": "✓ Emergency cmd",
         }
         label = type_labels.get(ack_type, f"✓ ACK:{ack_type}")
+        if ack_type == "RC":
+            self.gamepad_tab.mark_rc_ack()
         if ack_type != "RC":
             self.command_log.append_log("ACK", label, "#00E676")
 
@@ -785,6 +847,135 @@ class GCSApp(MainWindow):
     def _emergency_force_safe_land(self):
         """Nút Safe Land khẩn cấp từ overlay — FORCE hạ cánh, bypass state machine."""
         self.flight_controller.force_safe_land()
+
+    # ══════════════════════════════════════════════
+    # GAMEPAD TAB
+    # ══════════════════════════════════════════════
+
+    def _on_gamepad_enabled_changed(self, enabled: bool):
+        if enabled:
+            if not self.worker or not self.drone_state.is_connected:
+                self.gamepad_tab.set_blocked_reason("Disconnected")
+                self.gamepad_tab._set_gamepad_enabled(False, emit=False)
+                self.command_log.append_log("SYS", "Gamepad blocked: no connection", "#FFD54F")
+                QMessageBox.warning(self, "Gamepad", "Không thể bật gamepad: chưa kết nối ESP32.")
+                return
+            if self.flight_controller.is_active:
+                self.gamepad_tab.set_blocked_reason(f"Autopilot active: {self.flight_controller.state}")
+                self.gamepad_tab._set_gamepad_enabled(False, emit=False)
+                self.command_log.append_log("SYS", "Gamepad blocked: autopilot active", "#FFD54F")
+                QMessageBox.warning(self, "Gamepad", "Không thể bật gamepad: Autopilot đang chạy.")
+                return
+            self._gamepad_ctrl.reset_throttle()
+            self._gamepad_ctrl.enabled = True
+            self._gamepad_rc_timer.start()
+            self.gamepad_tab.set_blocked_reason("")
+            self.command_log.append_log("SYS", "Gamepad control enabled", "#4FC3F7")
+        else:
+            self._gamepad_rc_timer.stop()
+            self._gamepad_ctrl.enabled = False
+            if self.worker and not self.flight_controller.is_active:
+                safe_channels = self.flight_controller._safe_channels()
+                self.flight_controller.send_manual_rc(safe_channels)
+            self.gamepad_tab.set_blocked_reason("")
+            self.command_log.append_log("SYS", "Gamepad control disabled", "#4FC3F7")
+
+    def _on_gamepad_flight_mode_changed(self, mode: str):
+        self.command_log.append_log("GCS", f"Gamepad mode: {mode}", "#4FC3F7")
+
+    def _on_gamepad_speed_mode_changed(self, speed: int):
+        self.command_log.append_log("GCS", f"Gamepad speed: {speed}%", "#FFD54F")
+
+    def _on_gamepad_emergency_stop(self):
+        self.flight_controller.force_disarm()
+        self.gamepad_tab._set_gamepad_enabled(False, emit=False)
+        self._gamepad_rc_timer.stop()
+        self.command_log.append_log("ERR", "Gamepad emergency stop", "#F44336")
+
+    def _tick_gamepad_rc(self):
+        """Gamepad tick timer — guarded against autonomous modes.
+
+        Phase 3 refactor: computation delegated to GamepadController.
+        GCSApp chỉ giữ guard checks + UI feedback.
+        """
+        if not self.worker or not self.gamepad_tab.is_gamepad_enabled():
+            return
+
+        # BUG-3 FIX: Guard — nếu FC đang active (Takeoff/RTH/DISARM...) → KHÔNG gửi RC
+        if self.flight_controller.is_active:
+            self.gamepad_tab.set_blocked_reason(f"Autopilot active: {self.flight_controller.state}")
+            return
+
+        self.gamepad_tab.set_blocked_reason("")
+        state = self.gamepad_tab.get_control_state()
+
+        # ── Delegate computation → GamepadController ──
+        channels, cur_thr, motor_pct, lift_off = self._gamepad_ctrl.compute_channels(
+            state, self.flight_controller
+        )
+
+        self.flight_controller.send_manual_rc(channels)
+
+        # ── UI feedback ──
+        target_throttle = int(1000 + (_clamp(state["left_throttle"], 0.0, 1.0) * 1000))
+        self.gamepad_tab.update_rc_preview(
+            channels,
+            cur_thr,
+            motor_pct,
+            lift_off=lift_off,
+            commanded_throttle=target_throttle,
+        )
+
+    # ══════════════════════════════════════════════
+    # MANUAL RC CONTROL
+    # ══════════════════════════════════════════════
+
+    def _send_manual_rc(self):
+        """★ TASK-18: Đọc giá trị từ 8 slider và gửi MSP_SET_RAW_RC.
+
+        Thứ tự kênh AETR: [Roll, Pitch, Throttle, Yaw, AUX1, AUX2, AUX3, AUX4]
+        Các giá trị PWM đã được clamp 1000-2000 bởi slider limits + pack_set_raw_rc().
+
+        NOTE: Legacy method — hiện không được gọi từ đâu.
+        Dùng flight_controller.send_manual_rc() thay vì tạo MSPParser riêng.
+        """
+        if not self.worker or not hasattr(self, "manual_control_tab"):
+            return
+
+        mc = self.manual_control_tab
+        channels = [
+            mc.slider_roll.value(),       # CH1: Roll
+            mc.slider_pitch.value(),      # CH2: Pitch
+            mc.slider_throttle.value(),   # CH3: Throttle
+            mc.slider_yaw.value(),        # CH4: Yaw
+            mc.slider_aux1.value(),       # CH5: AUX1 (ARM)
+            mc.slider_aux2.value(),       # CH6: AUX2 (Flight Mode)
+            mc.slider_aux3.value(),       # CH7: AUX3 (Safe Land)
+            mc.slider_aux4.value(),       # CH8: AUX4 (RTH)
+        ]
+        # BUG-E FIX: Dùng shared FlightController thay vì tạo MSPParser mới mỗi lần
+        self.flight_controller.send_manual_rc(channels)
+
+    def _hold_position(self):
+        """★ TASK-19: Kích hoạt ALTHOLD+POSHOLD — giữ vị trí và độ cao hiện tại.
+
+        AUX2=2000 (CH6) bật đồng thời NAV ALTHOLD + NAV POSHOLD trên INAV.
+        FC sử dụng Baro + GPS BZ 251 để tự giữ vị trí.
+
+        NOTE: Legacy method — hiện không được gọi từ đâu.
+        BUG-F FIX: Dùng send_manual_rc() thay vì truy cập private _channels/_send_rc().
+        """
+        if not self.worker:
+            return
+
+        fc = self.flight_controller
+        # BUG-F FIX: Tạo bộ channel qua public API thay vì truy cập private fields
+        channels = fc._safe_channels()
+        channels[fc.CH_AUX1] = fc.AUX_ARM                    # Giữ ARM
+        channels[fc.CH_AUX2] = fc.AUX_NAV_ALTHOLD_POSHOLD    # Bật ALTHOLD+POSHOLD
+        channels[fc.CH_THROTTLE] = fc.RC_CENTER               # FC tự điều khiển
+        fc.send_manual_rc(channels)
+        fc.status_update.emit("HOLD — Giữ vị trí + độ cao (ALTHOLD+POSHOLD)")
 
     # ══════════════════════════════════════════════
     # MISSION LOGIC

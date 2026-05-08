@@ -664,8 +664,8 @@ def test_manual_ramp_throttle_increases():
     fc._manual_stage_start = _time.time()
     fc._tick()
 
-    assert fc._manual_ramp_throttle == 1050  # 1000 + MANUAL_RAMP_STEP(50)
-    assert fc._channels[fc.CH_THROTTLE] == 1050
+    assert fc._manual_ramp_throttle == 1025  # 1000 + MANUAL_RAMP_STEP(25)
+    assert fc._channels[fc.CH_THROTTLE] == 1025
 
     fc._timer.stop()
 
@@ -693,7 +693,7 @@ def test_manual_constants_valid():
 
     assert fc.MANUAL_HOVER_THROTTLE == 1400
     assert fc.MANUAL_CLIMB_THROTTLE == 1600
-    assert fc.MANUAL_RAMP_STEP == 50
+    assert fc.MANUAL_RAMP_STEP == 25
     assert fc.MANUAL_MIN_SWITCH_ALT == 2.0
     assert fc.MANUAL_ANGLE_IDLE_S == 1.0
     assert fc.MANUAL_NAV_SETTLE_S == 1.5

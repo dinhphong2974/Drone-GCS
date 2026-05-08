@@ -17,21 +17,16 @@ def _log(msg):
 
 
 # ══════════════════════════════════════════════════════════════
-# 1. CẤU HÌNH UART (ESP32 UART1 <-> FC UART3 trên SpeedyBee F405)
+# 1. UART CONFIG (ESP32 UART1 <-> FC UART3)
 # ══════════════════════════════════════════════════════════════
-# TX=17, RX=16 | txbuf/rxbuf=512 tránh block khi gửi/nhận nhiều MSP frame
 uart = machine.UART(1, baudrate=115200, tx=17, rx=16, txbuf=512, rxbuf=512)
 
 # ══════════════════════════════════════════════════════════════
-# 2. CẤU HÌNH WIFI ACCESS POINT
+# 2. WIFI AP CONFIG
 # ══════════════════════════════════════════════════════════════
 ap = network.WLAN(network.AP_IF)
 ap.active(True)
-try:
-    ap.config(essid="Drone_GCS_Wifi", password="DroneGCS@2026!", authmode=4)
-except TypeError:
-    # Một số bản MicroPython không hỗ trợ param authmode
-    ap.config(essid="Drone_GCS_Wifi", password="DroneGCS@2026!")
+ap.config(essid="Drone_GCS_Wifi", password="DroneGCS@2026!", authmode=4)
 
 _log("Đang khởi tạo Wifi...")
 while not ap.active():
@@ -39,7 +34,7 @@ while not ap.active():
 _log("Wifi AP đã sẵn sàng. IP: " + ap.ifconfig()[0])
 
 # ══════════════════════════════════════════════════════════════
-# 3. CẤU HÌNH TCP SOCKET SERVER
+# 3. TCP SERVER
 # ══════════════════════════════════════════════════════════════
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -50,7 +45,7 @@ s.setblocking(False)
 _log("Đang chờ PC kết nối tới cổng 8080...")
 
 # ══════════════════════════════════════════════════════════════
-# 4. WATCHDOG TIMER (tự reset ESP32 nếu firmware treo)
+# 4. WATCHDOG (tự reset nếu treo)
 # ══════════════════════════════════════════════════════════════
 try:
     from machine import WDT
@@ -61,7 +56,7 @@ except Exception:
     _log("[WDT] Không hỗ trợ WDT trên board này")
 
 # ══════════════════════════════════════════════════════════════
-# 5. HẰNG SỐ FAILSAFE & RC
+# 5. FAILSAFE & RC CONSTANTS
 # ══════════════════════════════════════════════════════════════
 FAILSAFE_TIMEOUT_MS = 2000
 FAILSAFE_RC_INTERVAL_MS = 100
@@ -70,14 +65,6 @@ RC_CENTER = 1500
 RC_LOW = 1000
 RC_HIGH = 2000
 
-# ══════════════════════════════════════════════════════════════
-# THỨ TỰ KÊNH RC — AETR (Chuẩn INAV mặc định)
-# ══════════════════════════════════════════════════════════════
-# MSP_SET_RAW_RC: [Roll, Pitch, Throttle, Yaw, AUX1, AUX2, AUX3, AUX4]
-# AUX1 (CH5): ARM/DISARM — 2000=ARM, 1000=DISARM
-# AUX2 (CH6): Flight Mode — 1000=Acro, 1500=ANGLE, 2000=ALTHOLD+POSHOLD
-# AUX3 (CH7): Safe Land — 2000=Kích hoạt, 1000=Bình thường
-# AUX4 (CH8): RTH — 2000=Kích hoạt, 1000=Bình thường
 CH_ROLL = 0
 CH_PITCH = 1
 CH_THROTTLE = 2
@@ -89,42 +76,39 @@ CH_AUX4 = 7
 
 MSP_SET_RAW_RC = 200
 
-# ── Prefix lệnh đặc biệt từ PC ──
 FS_PREFIX = b'FS:'
 EMERGENCY_PREFIX = b'EM:'
 HEARTBEAT_PREFIX = b'HB:'
 PING_PREFIX = b'PING:'
 
-# Tuple các marker để parser tách segment trong TCP coalesced buffer
 MARKERS = (EMERGENCY_PREFIX, FS_PREFIX, HEARTBEAT_PREFIX, PING_PREFIX, b'$M<')
 
-# ── Biến trạng thái ──
 conn = None
 last_msg_time = time.ticks_ms()
 failsafe_triggered = False
 last_failsafe_rc_time = 0
 conn_error_count = 0
+
 failsafe_behavior = "rth"
 
 gc_counter = 0
 GC_INTERVAL = 200
+
 CONN_ERROR_THRESHOLD = 10
 
 # ══════════════════════════════════════════════════════════════
-# 6. MSP FRAME BUILDER (ZERO ALLOCATION)
+# 6. MSP FRAME (ZERO ALLOC)
 # ══════════════════════════════════════════════════════════════
-# Pre-allocate 22-byte buffer: header(3) + size(1) + cmd(1) + payload(16) + checksum(1)
-# Tránh heap churn khi failsafe gửi RC mỗi 100ms trên MCU ~120KB RAM
 _rc_frame_buf = bytearray(22)
 _rc_frame_buf[0:3] = b'$M<'
 _rc_frame_buf[3] = 16
 _rc_frame_buf[4] = MSP_SET_RAW_RC
 
-# Pre-computed failsafe channel tuples (immutable, stored in flash)
 _FAILSAFE_RTH_CHANNELS = (
     RC_CENTER, RC_CENTER, RC_CENTER, RC_CENTER,
     RC_HIGH, RC_CENTER, RC_LOW, RC_HIGH
 )
+
 _FAILSAFE_LAND_CHANNELS = (
     RC_CENTER, RC_CENTER, RC_CENTER, RC_CENTER,
     RC_HIGH, RC_CENTER, RC_HIGH, RC_LOW
@@ -132,10 +116,6 @@ _FAILSAFE_LAND_CHANNELS = (
 
 
 def build_msp_set_raw_rc(channels):
-    """
-    Xây dựng MSP_SET_RAW_RC frame vào pre-allocated buffer (zero-alloc).
-    Checksum = XOR(size, cmd, payload bytes). FC reject nếu sai.
-    """
     struct.pack_into('<8H', _rc_frame_buf, 5, *channels)
     checksum = 16 ^ MSP_SET_RAW_RC
     for i in range(5, 21):
@@ -145,21 +125,16 @@ def build_msp_set_raw_rc(channels):
 
 
 def send_failsafe_rth():
-    """Gửi RTH: AUX1=ARM, AUX2=ANGLE, AUX4=RTH ON."""
-    uart.write(build_msp_set_raw_rc(_FAILSAFE_RTH_CHANNELS))
+    frame = build_msp_set_raw_rc(_FAILSAFE_RTH_CHANNELS)
+    uart.write(frame)
 
 
 def send_failsafe_land():
-    """Gửi Safe Land: AUX1=ARM, AUX2=ANGLE, AUX3=LAND ON."""
-    uart.write(build_msp_set_raw_rc(_FAILSAFE_LAND_CHANNELS))
+    frame = build_msp_set_raw_rc(_FAILSAFE_LAND_CHANNELS)
+    uart.write(frame)
 
-
-# ══════════════════════════════════════════════════════════════
-# 7. HÀM XỬ LÝ LỆNH ĐẶC BIỆT
-# ══════════════════════════════════════════════════════════════
 
 def check_failsafe_config(data):
-    """Xử lý lệnh cấu hình failsafe (FS:rth / FS:ignore). Không forward xuống FC."""
     global failsafe_behavior
     if data.startswith(FS_PREFIX):
         config = data[len(FS_PREFIX):].strip()
@@ -176,7 +151,6 @@ def check_failsafe_config(data):
 
 
 def _find_next_marker(data, start=1):
-    """Tìm vị trí marker gần nhất trong buffer từ vị trí start."""
     idxs = []
     for marker in MARKERS:
         idx = data.find(marker, start)
@@ -186,7 +160,6 @@ def _find_next_marker(data, start=1):
 
 
 def _split_segment(data):
-    """Tách segment đầu tiên ra khỏi buffer dựa trên marker tiếp theo."""
     next_idx = _find_next_marker(data, 1)
     if next_idx == -1:
         return data, b''
@@ -194,7 +167,6 @@ def _split_segment(data):
 
 
 def _contains_rc_command(chunk):
-    """Kiểm tra chunk có chứa MSP_SET_RAW_RC (cmd=200) không."""
     pos = 0
     while True:
         idx = chunk.find(b'$M<', pos)
@@ -205,16 +177,7 @@ def _contains_rc_command(chunk):
         pos = idx + 3
 
 
-
-
-
-
 def _handle_emergency_chain(data):
-    """
-    Xử lý chuỗi lệnh KHẨN CẤP (EM:).
-    TCP coalescing có thể ghép nhiều EM: frames → loop qua tất cả.
-    Xóa UART buffer 1 lần trước khi gửi, tắt failsafe state.
-    """
     global failsafe_triggered
     frame_count = 0
     remaining = data
@@ -222,7 +185,6 @@ def _handle_emergency_chain(data):
     if not remaining.startswith(EMERGENCY_PREFIX):
         return remaining, frame_count
 
-    # Xóa UART input buffer — loại bỏ response cũ
     uart.read()
 
     while remaining.startswith(EMERGENCY_PREFIX):
@@ -239,20 +201,14 @@ def _handle_emergency_chain(data):
             uart.write(msp_frame)
             frame_count += 1
 
-        # Feed WDT giữa các frame để tránh timeout khi chain dài
-        if wdt:
-            wdt.feed()
-
     if failsafe_triggered:
         failsafe_triggered = False
         _log("[!] EMERGENCY — Failsafe bị tắt bởi lệnh khẩn cấp")
 
-    _log("[!] EMERGENCY — Đã chuyển tiếp " + str(frame_count) + " frame(s)")
     return remaining, frame_count
 
 
 def close_connection():
-    """Đóng kết nối TCP. Chỉ gọi khi send/recv lỗi liên tiếp vượt ngưỡng."""
     global conn, conn_error_count
     if conn is not None:
         try:
@@ -265,15 +221,8 @@ def close_connection():
 
 
 # ══════════════════════════════════════════════════════════════
-# 8. VÒNG LẶP CHÍNH
+# 7. MAIN LOOP
 # ══════════════════════════════════════════════════════════════
-# KIẾN TRÚC AN TOÀN:
-# - Failsafe GIỮ socket mở → GCS vẫn gửi được Emergency
-# - Failsafe vẫn gửi RTH RC khi conn=None (drone không rơi)
-# - Emergency (EM:) bypass failsafe hoàn toàn
-# - Socket chỉ đóng khi send lỗi liên tiếp vượt ngưỡng
-# ══════════════════════════════════════════════════════════════
-
 gc.collect()
 _log("[MEM] Free: " + str(gc.mem_free()) + " bytes")
 
@@ -281,16 +230,13 @@ while True:
     if wdt:
         wdt.feed()
 
-    # ─── LUỒNG 0: Khi chưa có kết nối TCP ───
     if conn is None:
-        # Vẫn gửi RTH RC khi failsafe active để drone không bị FC DISARM
         if failsafe_triggered and failsafe_behavior == "rth":
             now = time.ticks_ms()
             if time.ticks_diff(now, last_failsafe_rc_time) > FAILSAFE_RC_INTERVAL_MS:
                 send_failsafe_rth()
                 last_failsafe_rc_time = now
 
-        # Drain UART buffer — FC vẫn gửi telemetry nhưng không có PC để forward
         if uart.any():
             uart.read()
 
@@ -304,36 +250,27 @@ while True:
         except OSError:
             pass
 
-        time.sleep_ms(10)  # Idle — không cần poll nhanh
+        time.sleep_ms(10)
 
     else:
-        # ─── LUỒNG 1: Đọc lệnh từ PC → Xử lý → Gửi xuống FC ───
         try:
             data_from_pc = conn.recv(1024)
 
             if data_from_pc == b'':
-                _log("[!] PC đã ngắt kết nối (empty recv)")
+                print("[!] PC đã ngắt kết nối (empty recv)")
                 close_connection()
                 continue
 
             if data_from_pc:
                 conn_error_count = 0
 
-                # ═══ GENERIC MARKER-BASED PARSER ═══
-                # Xử lý TCP coalescing: tách buffer thành từng segment theo marker
                 data = data_from_pc
                 while data:
                     marker_idx = _find_next_marker(data, 0)
 
-                    # Phần data trước marker đầu tiên → forward thẳng xuống FC
                     if marker_idx == -1 or marker_idx > 0:
                         segment = data if marker_idx == -1 else data[:marker_idx]
-
-                        # Forward xuống FC — FC tự reject frame sai checksum
-                        # Chỉ drop fragment < 3 bytes (không thể là MSP hợp lệ)
-                        if len(segment) >= 3:
-                            uart.write(segment)
-
+                        uart.write(segment)
                         last_msg_time = time.ticks_ms()
 
                         if _contains_rc_command(segment):
@@ -345,7 +282,6 @@ while True:
                         data = b'' if marker_idx == -1 else data[marker_idx:]
                         continue
 
-                    # Priority 1: EMERGENCY
                     if data.startswith(EMERGENCY_PREFIX):
                         data, frame_count = _handle_emergency_chain(data)
                         last_msg_time = time.ticks_ms()
@@ -355,7 +291,6 @@ while True:
                             pass
                         continue
 
-                    # Priority 2: FAILSAFE CONFIG
                     if data.startswith(FS_PREFIX):
                         segment, data = _split_segment(data)
                         if check_failsafe_config(segment):
@@ -366,7 +301,6 @@ while True:
                                 pass
                         continue
 
-                    # Priority 3: PING
                     if data.startswith(PING_PREFIX):
                         segment, data = _split_segment(data)
                         last_msg_time = time.ticks_ms()
@@ -377,13 +311,11 @@ while True:
                             pass
                         continue
 
-                    # Priority 4: HEARTBEAT
                     if data.startswith(HEARTBEAT_PREFIX):
                         _, data = _split_segment(data)
                         last_msg_time = time.ticks_ms()
                         continue
 
-                    # Fallback: forward xuống FC + clear data
                     uart.write(data)
                     last_msg_time = time.ticks_ms()
                     if _contains_rc_command(data):
@@ -393,11 +325,6 @@ while True:
                             pass
                     data = b''
 
-                # Feed WDT sau khi xử lý xong toàn bộ data block
-                if wdt:
-                    wdt.feed()
-
-                # Reset failsafe khi nhận bất kỳ data từ PC
                 if failsafe_triggered:
                     _log("[+] PC đã kết nối lại — tắt Failsafe")
                     failsafe_triggered = False
@@ -405,7 +332,6 @@ while True:
         except OSError:
             pass
 
-        # ─── LUỒNG 2: Đọc phản hồi từ FC → Gửi lên PC ───
         if uart.any():
             data_from_fc = uart.read(256)
             if data_from_fc and conn is not None:
@@ -419,7 +345,6 @@ while True:
                         close_connection()
                         continue
 
-        # ─── LUỒNG 3: Watchdog Failsafe ───
         elapsed = time.ticks_diff(time.ticks_ms(), last_msg_time)
 
         if elapsed > FAILSAFE_TIMEOUT_MS:
@@ -444,7 +369,6 @@ while True:
                         send_failsafe_rth()
                     last_failsafe_rc_time = now
 
-    # ─── Yield CPU + Garbage Collection định kỳ ───
     time.sleep_ms(1)
     gc_counter += 1
     if gc_counter >= GC_INTERVAL:

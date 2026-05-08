@@ -1,15 +1,13 @@
 """
-main_window.py - Cửa sổ chính Mission Control (Single-Screen).
+main_window.py - Cửa sổ chính Mission Control (tabbed shell).
 
 Cấu trúc layout:
     MainWindow (QMainWindow)
     └── centralWidget (QVBoxLayout)
         ├── TopStatusBar (36px fixed — Battery + WiFi + GPS + Flight Mode)
-        └── QHBoxLayout (body)
-            ├── LeftToolbar (48px fixed — icon buttons)
-            ├── LeftPanel (320px fixed — Attitude 3D + Instruments + Telemetry)
-            ├── MapPanel (stretch — bản đồ Leaflet trung tâm)
-            └── RightPanel (320px fixed — Camera + Command Log)
+        └── QTabWidget
+            ├── Mission Control (toolbar + panels + map)
+            └── Gamepad (virtual controller)
 
 Không còn: NavRail, QStackedWidget, DashboardTab, ManualControlTab, tab_log.
 ConfigTab → QDialog (mở từ nút Settings trên LeftToolbar).
@@ -19,7 +17,7 @@ MissionTab → MapPanel (map chiếm center, waypoint panel floating).
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget
 )
 
 from ui.widgets.top_status_bar import TopStatusBar
@@ -28,6 +26,7 @@ from ui.widgets.left_panel import LeftPanel
 from ui.widgets.right_panel import RightPanel
 from ui.map_panel import MapPanel
 from ui.config_tab import ConfigTab
+from ui.gamepad_tab import GamepadTab
 
 
 # ══════════════════════════════════════════════
@@ -153,6 +152,27 @@ QDialog {
     background-color: #0a0e17;
     color: #c0c8d8;
 }
+QTabWidget::pane {
+    border: none;
+    background: #0a0e17;
+}
+QTabBar::tab {
+    background: #101726;
+    color: #7d859f;
+    border: 1px solid #1a2332;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 4px;
+    font-weight: bold;
+}
+QTabBar::tab:selected {
+    background: #141c2d;
+    color: #00ff88;
+    border-color: #2a3a52;
+}
+QTabBar::tab:hover {
+    color: #c0c8d8;
+}
 """
 
 
@@ -168,6 +188,7 @@ class MainWindow(QMainWindow):
         self.left_panel     — LeftPanel (Attitude 3D + Instruments + Telemetry)
         self.map_panel      — MapPanel (map Leaflet + waypoint overlay)
         self.right_panel    — RightPanel (Camera + CommandLog)
+        self.gamepad_tab    — GamepadTab (virtual controller page)
         self.command_log    — shortcut → right_panel.command_log
         self.config_tab     — ConfigTab (QDialog, không hiển thị mặc định)
 
@@ -204,28 +225,39 @@ class MainWindow(QMainWindow):
         self.top_bar = TopStatusBar()
         main_layout.addWidget(self.top_bar)
 
-        # ═══════ BODY: Toolbar + Left + Center + Right ═══════
-        body_layout = QHBoxLayout()
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
+        # ═══════ TAB CONTAINER ═══════
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMovable(False)
+        main_layout.addWidget(self.tabs, stretch=1)
+
+        # ═══════ PAGE 1: MISSION CONTROL ═══════
+        self.mission_page = QWidget()
+        mission_layout = QHBoxLayout(self.mission_page)
+        mission_layout.setContentsMargins(0, 0, 0, 0)
+        mission_layout.setSpacing(0)
 
         # ── Left Toolbar (48px fixed) ──
         self.left_toolbar = LeftToolbar()
-        body_layout.addWidget(self.left_toolbar)
+        mission_layout.addWidget(self.left_toolbar)
 
         # ── Left Panel (320px fixed — Attitude + Telemetry) ──
         self.left_panel = LeftPanel()
-        body_layout.addWidget(self.left_panel)
+        mission_layout.addWidget(self.left_panel)
 
         # ── Center Map (stretch) ──
         self.map_panel = MapPanel()
-        body_layout.addWidget(self.map_panel, stretch=1)
+        mission_layout.addWidget(self.map_panel, stretch=1)
 
         # ── Right Panel (320px fixed — Camera + Log) ──
         self.right_panel = RightPanel()
-        body_layout.addWidget(self.right_panel)
+        mission_layout.addWidget(self.right_panel)
 
-        main_layout.addLayout(body_layout)
+        self.tabs.addTab(self.mission_page, "Mission Control")
+
+        # ═══════ PAGE 2: GAMEPAD ═══════
+        self.gamepad_tab = GamepadTab()
+        self.tabs.addTab(self.gamepad_tab, "Gamepad")
 
         # ═══════ BACKWARD-COMPATIBLE SHORTCUTS ═══════
         # Để main.py rewiring an toàn — giữ tên cũ chỉ trỏ tới widget mới

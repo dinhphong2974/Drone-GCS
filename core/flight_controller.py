@@ -121,7 +121,7 @@ class FlightController(QObject):
     # ── Manual Takeoff (3.5-inch 6S 1960kv) ──
     MANUAL_HOVER_THROTTLE = 1400    # Ước lượng hover throttle
     MANUAL_CLIMB_THROTTLE = 1600    # Throttle leo trong ANGLE mode
-    MANUAL_RAMP_STEP = 50           # Tăng throttle 50μs mỗi tick (100ms)
+    MANUAL_RAMP_STEP = 25           # Tăng throttle 25μs mỗi tick — mượt cho 6S 1960kv
     MANUAL_MIN_SWITCH_ALT = 2.0     # Độ cao tối thiểu trước khi bật NAV (tránh ground effect)
     MANUAL_ANGLE_IDLE_S = 1.0       # Chờ 1s ở ANGLE trước khi ramp
     MANUAL_NAV_SETTLE_S = 1.5       # Chờ 1.5s sau khi bật NAV để INAV lock
@@ -182,6 +182,42 @@ class FlightController(QObject):
     def set_worker(self, worker):
         """Cập nhật reference tới WifiWorker hiện tại. Gọi từ GCSApp."""
         self._worker = worker
+
+    @property
+    def state(self) -> str:
+        """Trả về trạng thái state machine hiện tại."""
+        return self._state
+
+    @property
+    def is_active(self) -> bool:
+        """True khi state machine đang điều khiển bay (KHÔNG PHẢI IDLE).
+
+        Dùng để guard GamepadTab — gamepad chỉ được gửi RC khi FC IDLE.
+        """
+        return self._state != "IDLE"
+
+    def send_manual_rc(self, channels: list[int]):
+        """Gửi trực tiếp 8 kênh RC — CHỈ dùng khi state machine IDLE.
+
+        Đây là API cho GamepadTab / ManualControlTab. PWM được clamp
+        tại controller level (layer 1) + parser level (layer 2).
+
+        BUG-2 FIX: Guard state machine — nếu FC đang active (Takeoff,
+        RTH, DISARM, etc.) thì KHÔNG cho gamepad ghi đè channels.
+
+        Args:
+            channels: List 8 giá trị kênh RC (1000-2000μs)
+
+        Raises:
+            RuntimeError: Nếu state machine đang active
+        """
+        if self.is_active:
+            raise RuntimeError(
+                f"Cannot send manual RC while state machine is active "
+                f"(state={self._state})"
+            )
+        self._channels = [max(1000, min(2000, int(ch))) for ch in channels]
+        self._send_rc()
 
     def arm(self):
         """
@@ -515,16 +551,6 @@ class FlightController(QObject):
         config_cmd = f"FS:{behavior}".encode()
         self._worker.send_command(config_cmd)
         self.status_update.emit(f"Đã gửi cấu hình failsafe: {behavior}")
-
-    @property
-    def state(self) -> str:
-        """Trạng thái hiện tại của state machine."""
-        return self._state
-
-    @property
-    def is_active(self) -> bool:
-        """True nếu đang thực hiện chuỗi bay (không phải IDLE)."""
-        return self._state != "IDLE"
 
     @property
     def _effective_altitude(self) -> float:
@@ -1391,7 +1417,7 @@ class FlightController(QObject):
         - AUX3 (Safe Land) = 1000 → OFF
         - AUX4 (RTH) = 1000 → OFF
 
-        Thứ tự: [Roll, Pitch, Yaw, Throttle, AUX1, AUX2, AUX3, AUX4]
+        Thứ tự: [Roll, Pitch, Throttle, Yaw, AUX1, AUX2, AUX3, AUX4]
         """
         return [
             self.RC_CENTER,         # Roll
