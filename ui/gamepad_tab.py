@@ -179,6 +179,7 @@ class GamepadTab(QWidget):
         self._connected = False
         self._armed = False
         self._arming_requested = False
+        self._hold_position = False
         self._fc_state = "IDLE"
         self._flight_mode = "MANUAL"
         self._speed_mode = 60
@@ -373,10 +374,37 @@ class GamepadTab(QWidget):
         self.btn_center_sticks.clicked.connect(self.reset_sticks)
         center_layout.addWidget(self.btn_center_sticks)
 
+        # ── NÚT HOLD POSITION ──
+        self.btn_hold_pos = QPushButton("\U0001f4cd HOLD POSITION")
+        self.btn_hold_pos.setCursor(Qt.PointingHandCursor)
+        self.btn_hold_pos.setCheckable(True)
+        self.btn_hold_pos.setMinimumHeight(44)
+        self.btn_hold_pos.setEnabled(False)
+        self.btn_hold_pos.setStyleSheet("""
+            QPushButton {
+                background-color: #12182a;
+                color: #d9def3;
+                border: 2px solid #FF9800;
+                border-radius: 10px;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 8px;
+            }
+            QPushButton:hover { background-color: #1a2238; border-color: #FFB74D; }
+            QPushButton:checked {
+                background-color: #E65100;
+                color: white;
+                border-color: #FF6D00;
+            }
+            QPushButton:disabled { background-color: #10131c; color: #4b5267; border-color: #20283b; }
+        """)
+        self.btn_hold_pos.clicked.connect(self._on_hold_position_toggled)
+        center_layout.addWidget(self.btn_hold_pos)
+
         quick_text = QLabel(
             "Quick actions\n"
             "- Gamepad là manual RC thuần, không bật NAV mode\n"
-            "- Mission Control giữ các chế độ auto / safety riêng\n"
+            "- HOLD POSITION: Giữ vị trí + độ cao (GPS+Baro)\n"
             "- Throttle tăng dần để nhìn rõ điểm lift-off"
         )
         quick_text.setWordWrap(True)
@@ -588,9 +616,12 @@ class GamepadTab(QWidget):
         """)
         
         self.btn_arm_toggle.setEnabled(enabled)
+        self.btn_hold_pos.setEnabled(enabled)
         if not enabled:
             self.btn_arm_toggle.setChecked(False)
             self._on_arm_toggled(False)
+            self.btn_hold_pos.setChecked(False)
+            self._on_hold_position_toggled(False)
             
         self.lbl_gamepad_state.setText("ON" if enabled else "OFF")
         self.lbl_gamepad_state.setStyleSheet(
@@ -614,6 +645,14 @@ class GamepadTab(QWidget):
         # Đặt lại thanh ga về 0 khi chờ DISARM để an toàn
         if not checked:
             self.left_stick.set_values(0.0, 0.0, emit=True)
+            # Tắt HOLD khi DISARM để an toàn
+            self.btn_hold_pos.setChecked(False)
+            self._on_hold_position_toggled(False)
+
+    def _on_hold_position_toggled(self, checked: bool):
+        """Toggle chế độ HOLD POSITION (ALTHOLD+POSHOLD)."""
+        self._hold_position = checked
+        self.btn_hold_pos.setText("\U0001f512 HOLDING POS" if checked else "\U0001f4cd HOLD POSITION")
 
     def _set_flight_mode(self, mode: str, emit: bool = True):
         self._flight_mode = mode
@@ -661,7 +700,8 @@ class GamepadTab(QWidget):
             "right_x": self._right_x,
             "right_y": self._right_y,
             "blocked_reason": self._blocked_reason,
-            "is_arming_requested": self._arming_requested
+            "is_arming_requested": self._arming_requested,
+            "hold_position": self._hold_position
         }
 
     def set_connection_status(self, connected: bool, message: str = ""):

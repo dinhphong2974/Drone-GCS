@@ -140,8 +140,10 @@ class GamepadController:
             else fc.AUX_DISARM
         )
 
-        # Flight mode
-        if control_state.get("flight_mode") == "DIRECT":
+        # Flight mode — HOLD POSITION ưu tiên cao nhất
+        if control_state.get("hold_position"):
+            channels[fc.CH_AUX2] = fc.AUX_NAV_ALTHOLD_POSHOLD
+        elif control_state.get("flight_mode") == "DIRECT":
             channels[fc.CH_AUX2] = fc.AUX_NAV_ALTHOLD_POSHOLD
         else:
             channels[fc.CH_AUX2] = fc.AUX_ANGLE
