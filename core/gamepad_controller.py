@@ -1,4 +1,5 @@
 """
+
 gamepad_controller.py - Logic điều khiển gamepad tách biệt khỏi UI.
 
 Module này chứa toàn bộ computation logic cho virtual gamepad:
@@ -12,6 +13,8 @@ GCSApp (main.py) làm cầu nối giữa GamepadTab (UI) và module này.
 
 Hardware reference: OddityRC XI35 Pro 3.5-inch, 6S 1960kv
 """
+
+import time
 
 from core.utils import clamp as _clamp
 
@@ -33,10 +36,19 @@ class GamepadController:
     # Biên độ trục điều khiển theo speed mode (μs offset từ center 1500)
     AXIS_SCALES = {30: 220, 60: 350, 100: 480}
 
+    # ── Ground Idle Detection — Auto-DISARM khi nằm đất ──
+    GROUND_IDLE_TIMEOUT_S = 2.0     # Ga min + chạm đất liên tục > 2s → auto DISARM
+    GROUND_PROXIMITY_M = 0.15       # LiDAR < 15cm = chạm đất (khớp FC.LIDAR_GROUND_PROXIMITY)
+
     def __init__(self):
         """Khởi tạo với throttle ở mức tối thiểu."""
         self._current_throttle: int = 1000
         self._enabled: bool = False
+
+        # Ground idle detection state
+        self._ground_idle_start: float = 0.0
+        self._ground_idle_active: bool = False
+        self._auto_disarmed: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -48,17 +60,29 @@ class GamepadController:
         self._enabled = value
         if not value:
             self._current_throttle = 1000
+            self._ground_idle_active = False
+            self._ground_idle_start = 0.0
+            self._auto_disarmed = False
 
     @property
     def current_throttle(self) -> int:
         """Throttle hiện tại sau ramp (1000-2000μs)."""
         return self._current_throttle
 
-    def reset_throttle(self):
-        """Reset throttle về mức tối thiểu (motor idle)."""
-        self._current_throttle = 1000
+    @property
+    def auto_disarmed(self) -> bool:
+        """True khi auto-DISARM đã được trigger do drone nằm đất quá lâu."""
+        return self._auto_disarmed
 
-    def compute_channels(self, control_state: dict, fc) -> tuple:
+    def reset_throttle(self):
+        """Reset throttle về mức tối thiểu (motor idle) và xóa ground idle state."""
+        self._current_throttle = 1000
+        self._ground_idle_active = False
+        self._ground_idle_start = 0.0
+        self._auto_disarmed = False
+
+    def compute_channels(self, control_state: dict, fc,
+                         surface_altitude: float = -1.0) -> tuple:
         """
         Tính toán 8 kênh RC từ trạng thái joystick.
 
@@ -73,6 +97,9 @@ class GamepadController:
                 - flight_mode (str): "ANGLE" hoặc "DIRECT"
             fc: FlightController reference — dùng để lấy constants
                 (CH_*, AUX_*, _safe_channels)
+            surface_altitude: Khoảng cách LiDAR tới mặt đất (m).
+                -1.0 = không có data (default, backward compatible).
+                Dùng cho ground idle detection auto-DISARM.
 
         Returns:
             tuple: (channels, current_throttle, motor_pct, lift_off)
@@ -128,6 +155,24 @@ class GamepadController:
         channels[fc.CH_PITCH] = int(1500 - (right_y * axis_scale))
         channels[fc.CH_YAW] = int(1500 + (left_x * axis_scale))
         channels[fc.CH_THROTTLE] = self._current_throttle
+
+        # ── Ground Idle Detection — Auto-DISARM khi nằm đất + ga min > 2s ──
+        is_arming = control_state.get("is_arming_requested")
+        if (is_arming
+                and self._current_throttle <= 1000
+                and 0 <= surface_altitude < self.GROUND_PROXIMITY_M):
+            # Drone đang ARM + ga min + trên mặt đất
+            if not self._ground_idle_active:
+                self._ground_idle_start = time.time()
+                self._ground_idle_active = True
+            elif time.time() - self._ground_idle_start >= self.GROUND_IDLE_TIMEOUT_S:
+                # Timeout → tự DISARM để chống bouncing loop
+                channels[fc.CH_AUX1] = fc.AUX_DISARM
+                self._auto_disarmed = True
+                self._ground_idle_active = False
+        else:
+            # Điều kiện không thỏa → reset timer
+            self._ground_idle_active = False
 
         # ── Metrics cho UI feedback ──
         motor_pct = max(0, min(100, int((self._current_throttle - 1000) / 10)))

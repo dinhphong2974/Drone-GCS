@@ -252,7 +252,7 @@ class GCSApp(MainWindow):
 
         # ── Kết nối nút điều khiển bay (từ LeftToolbar) ──
         tb = self.left_toolbar
-        tb.btn_arm.clicked.connect(self.flight_controller.arm)
+        tb.btn_arm.clicked.connect(self._on_toolbar_arm_clicked)
         tb.btn_takeoff.clicked.connect(self._confirm_takeoff)
         tb.btn_manual_takeoff.clicked.connect(self._confirm_manual_takeoff)
         tb.btn_rth.clicked.connect(self.flight_controller.rth)
@@ -848,6 +848,24 @@ class GCSApp(MainWindow):
         """Nút Safe Land khẩn cấp từ overlay — FORCE hạ cánh, bypass state machine."""
         self.flight_controller.force_safe_land()
 
+    def _on_toolbar_arm_clicked(self):
+        """Toggle ARM/DISARM khi nhấn nút ARM trên LeftToolbar.
+
+        BUG-2 FIX: Trước đây btn_arm chỉ connect cứng vào fc.arm(),
+        dẫn đến không thể DISARM khi drone đã ARM. Giờ dùng toggle
+        dựa trên drone_state.is_armed.
+
+        Dùng disarm() (soft) thay vì force_disarm() vì đây là thao tác
+        bình thường, không phải emergency. disarm() tắt NAV mode 300ms
+        trước rồi mới gửi DISARM — an toàn cho INAV.
+        """
+        if self.drone_state.is_armed:
+            self.flight_controller.disarm()
+            self.command_log.append_log("GCS", "Toolbar DISARM requested", "#FF9800")
+        else:
+            self.flight_controller.arm()
+            self.command_log.append_log("GCS", "Toolbar ARM requested", "#4CAF50")
+
     # ══════════════════════════════════════════════
     # GAMEPAD TAB
     # ══════════════════════════════════════════════
@@ -911,8 +929,22 @@ class GCSApp(MainWindow):
 
         # ── Delegate computation → GamepadController ──
         channels, cur_thr, motor_pct, lift_off = self._gamepad_ctrl.compute_channels(
-            state, self.flight_controller
+            state, self.flight_controller,
+            surface_altitude=self.drone_state.surface_altitude,
         )
+
+        # ── Auto-DISARM: drone nằm đất + ga min > 2s → tự DISARM ──
+        if self._gamepad_ctrl.auto_disarmed:
+            # CRITICAL: Gửi frame DISARM TRƯỚC khi tắt gamepad!
+            # Không gửi → channels với AUX1=DISARM bị mất, drone vẫn ARM.
+            self.flight_controller.send_manual_rc(channels)
+            self.command_log.append_log(
+                "SYS", "Auto-DISARM: drone on ground + zero throttle > 2s", "#FFD54F"
+            )
+            self.gamepad_tab._set_gamepad_enabled(False, emit=False)
+            self._gamepad_rc_timer.stop()
+            self._gamepad_ctrl.reset_throttle()
+            return
 
         self.flight_controller.send_manual_rc(channels)
 
