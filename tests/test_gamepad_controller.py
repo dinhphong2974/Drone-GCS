@@ -257,17 +257,20 @@ def test_all_channels_in_valid_range(gc, fc):
 def test_auto_disarm_after_ground_idle(gc, fc, monkeypatch):
     """ARM + throttle=0 + surface<0.15m + 2s → AUX1 phải = DISARM."""
     import time as _time
-    _real_time = _time.time  # Lưu reference gốc trước khi patch
     state = _make_state(is_arming_requested=True, left_throttle=0.0)
     surface = 0.10  # 10cm — trên mặt đất
 
+    # Snapshot thời gian trước tick 1 → deterministic
+    t0 = _time.time()
+
     # Tick đầu tiên: bắt đầu đếm, chưa DISARM
+    monkeypatch.setattr(_time, "time", lambda: t0)
     channels, _, _, _ = gc.compute_channels(state, fc, surface_altitude=surface)
     assert channels[fc.CH_AUX1] == fc.AUX_ARM  # Chưa DISARM
     assert gc.auto_disarmed is False
 
-    # Giả lập thời gian trôi qua 3s
-    monkeypatch.setattr(_time, "time", lambda: _real_time() + 3.0)
+    # Giả lập thời gian trôi qua 3s (cố định, không phụ thuộc wall clock)
+    monkeypatch.setattr(_time, "time", lambda: t0 + 3.0)
     channels, _, _, _ = gc.compute_channels(state, fc, surface_altitude=surface)
     assert channels[fc.CH_AUX1] == fc.AUX_DISARM  # ĐÃ DISARM
     assert gc.auto_disarmed is True
@@ -285,10 +288,11 @@ def test_no_auto_disarm_throttle_above_idle(gc, fc):
 def test_no_auto_disarm_lidar_out_of_range(gc, fc, monkeypatch):
     """surface_altitude = -1 (ngoài tầm) → không trigger."""
     import time as _time
-    _real_time = _time.time
+    t0 = _time.time()
     state = _make_state(is_arming_requested=True, left_throttle=0.0)
+    monkeypatch.setattr(_time, "time", lambda: t0)
     gc.compute_channels(state, fc, surface_altitude=-1.0)
-    monkeypatch.setattr(_time, "time", lambda: _real_time() + 3.0)
+    monkeypatch.setattr(_time, "time", lambda: t0 + 3.0)
     channels, _, _, _ = gc.compute_channels(state, fc, surface_altitude=-1.0)
     assert channels[fc.CH_AUX1] == fc.AUX_ARM  # KHÔNG DISARM
     assert gc.auto_disarmed is False
@@ -297,10 +301,11 @@ def test_no_auto_disarm_lidar_out_of_range(gc, fc, monkeypatch):
 def test_no_auto_disarm_not_armed(gc, fc, monkeypatch):
     """ARM = False → không trigger auto-DISARM."""
     import time as _time
-    _real_time = _time.time
+    t0 = _time.time()
     state = _make_state(is_arming_requested=False, left_throttle=0.0)
+    monkeypatch.setattr(_time, "time", lambda: t0)
     gc.compute_channels(state, fc, surface_altitude=0.10)
-    monkeypatch.setattr(_time, "time", lambda: _real_time() + 3.0)
+    monkeypatch.setattr(_time, "time", lambda: t0 + 3.0)
     channels, _, _, _ = gc.compute_channels(state, fc, surface_altitude=0.10)
     assert channels[fc.CH_AUX1] == fc.AUX_DISARM  # Đã DISARM vì is_arming=False → AUX1 default
     assert gc.auto_disarmed is False  # Nhưng auto_disarmed KHÔNG trigger
@@ -334,10 +339,11 @@ def test_ground_idle_resets_on_disable(gc, fc):
 def test_auto_disarmed_property_resets(gc, fc, monkeypatch):
     """auto_disarmed reset khi gọi reset_throttle()."""
     import time as _time
-    _real_time = _time.time  # Lưu reference gốc trước khi patch
+    t0 = _time.time()
     state = _make_state(is_arming_requested=True, left_throttle=0.0)
+    monkeypatch.setattr(_time, "time", lambda: t0)
     gc.compute_channels(state, fc, surface_altitude=0.10)
-    monkeypatch.setattr(_time, "time", lambda: _real_time() + 3.0)
+    monkeypatch.setattr(_time, "time", lambda: t0 + 3.0)
     gc.compute_channels(state, fc, surface_altitude=0.10)
     assert gc.auto_disarmed is True
 
