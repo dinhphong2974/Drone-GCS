@@ -34,6 +34,17 @@ serial 5 1 115200 57600 57600 115200
 set rangefinder_hardware = MSP
 set opflow_hardware = MSP
 
+# ── LiDAR Trust Range (tầm tin cậy) ──
+# inav_max_surface_altitude: Độ cao tối đa (cm) mà INAV tin tưởng rangefinder.
+# MTF-02 max range = 250cm, nhưng trust 220cm để có margin.
+# ⚡ GIÁ TRỊ NÀY PHẢI ĐỒNG BỘ VỚI LIDAR_TRUST_RANGE_M (2.2m) trong flight_controller.py
+set inav_max_surface_altitude = 220
+
+# Sensor fusion weights cho rangefinder (default: p=20, v=4)
+# Tăng nhẹ để LiDAR có trọng số cao hơn Baro ở vùng gần đất
+set inav_w_z_surface_p = 25
+set inav_w_z_surface_v = 5
+
 # ─────────────────────────────────────────────────
 # 3. NAVIGATION — Surface Control & PID
 # ─────────────────────────────────────────────────
@@ -75,14 +86,16 @@ set gps_min_sats = 6
 # ─────────────────────────────────────────────────
 # 5. FAILSAFE CONFIGURATION
 # ─────────────────────────────────────────────────
-# Failsafe: Khi mất tín hiệu RC thì cố gắng Return To Home
-set failsafe_procedure = RTH
+# Failsafe: Khi mất tín hiệu RC → hạ cánh tại chỗ (LAND)
+# Lý do chọn LAND thay RTH: drone 3.5" bay gần, LAND an toàn hơn RTH
+# (tránh bay ngược lại qua chướng ngại vật khi mất tín hiệu)
+set failsafe_procedure = LAND
 set failsafe_delay = 10
 set failsafe_off_delay = 200
 set failsafe_throttle_low_delay = 100
 
-# Khi RTH nhưng lại báo lỗi vệ tinh (xa/che khuất) thì rớt tự do (DROP)
-set failsafe_min_distance = 0
+# Khi LAND nhưng GPS quá kém → rớt tự do (DROP) — biện pháp cuối cùng
+set failsafe_min_distance = 30
 set failsafe_min_distance_procedure = DROP
 
 # ─────────────────────────────────────────────────
@@ -107,15 +120,18 @@ set dshot_beeper_enabled = OFF
 # │ ANGLE       │ AUX2/CH6│ Min: 1400 — Max: 1600       │
 # │ NAV ALTHOLD │ AUX2/CH6│ Min: 1900 — Max: 2100       │
 # │ NAV POSHOLD │ AUX2/CH6│ Min: 1900 — Max: 2100       │
+# │ NAV WP      │ AUX2/CH6│ Min: 1900 — Max: 2100       │
 # │ FAILSAFE    │ AUX3/CH7│ Min: 1750 — Max: 2100       │
-# │ NAV RTH     │ AUX4/CH8│ Min: 1750 — Max: 2100       │
+# │ (AUX4/CH8)  │ — TRỐNG │ Không map mode (dự phòng)   │
 # └─────────────┴─────────┴─────────────────────────────┘
 #
-# NOTE: Ở mức ga PWM = 2000 của CH6, cả ALTHOLD và POSHOLD kết hợp 
-# hoạt động để giữ GPS + Độ Cao tĩnh.
-# Tích hợp thêm lệnh "NAV WP" vào cùng khối POSHOLD và ALTHOLD 
-# nếu muốn bật Mode Tự bay.
+# NOTE: Ở mức ga PWM = 2000 của CH6, ALTHOLD + POSHOLD + NAV WP kết hợp
+# hoạt động (chồng chéo có chủ đích — xem INAV_QUIRKS.md).
+# AUX4/CH8: Không map NAV RTH vì failsafe_procedure = LAND (hạ cánh tại chỗ).
 #
+# ⚠️ CẤU HÌNH MODES (bảng trên) CHỈ CHỈNH ĐƯỢC QUA:
+#   → INAV Configurator → Tab "Modes" → Kéo slider cho từng mode
+#   → KHÔNG có lệnh CLI nào thay thế được!
 
 # ─────────────────────────────────────────────────
 # 8. BATTERY MONITORING — Voltage & Current

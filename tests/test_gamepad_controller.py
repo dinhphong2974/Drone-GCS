@@ -153,10 +153,22 @@ def test_disarm_channel(gc, fc):
 
 
 def test_direct_mode(gc, fc):
-    """DIRECT mode → AUX2 = NAV_ALTHOLD_POSHOLD (2000)."""
-    state = _make_state(flight_mode="DIRECT")
+    """DIRECT mode + ARM → AUX2 = NAV_ALTHOLD_POSHOLD (2000)."""
+    state = _make_state(flight_mode="DIRECT", is_arming_requested=True)
     channels, _, _, _ = gc.compute_channels(state, fc)
     assert channels[fc.CH_AUX2] == fc.AUX_NAV_ALTHOLD_POSHOLD
+
+
+def test_disarm_forces_angle_in_direct_mode(gc, fc):
+    """SAFETY FIX: DIRECT mode + DISARM → AUX2 phải = ANGLE (tắt NAV).
+
+    INAV firmware REJECT DISARM khi NAV mode active (ARMING_DISABLED_NAVIGATION).
+    Khi is_arming_requested=False, AUX2 phải force về ANGLE bất kể flight_mode.
+    """
+    state = _make_state(flight_mode="DIRECT", is_arming_requested=False)
+    channels, _, _, _ = gc.compute_channels(state, fc)
+    assert channels[fc.CH_AUX1] == fc.AUX_DISARM   # DISARM
+    assert channels[fc.CH_AUX2] == fc.AUX_ANGLE     # Force ANGLE, không phải NAV!
 
 
 def test_angle_mode(gc, fc):
@@ -164,6 +176,32 @@ def test_angle_mode(gc, fc):
     state = _make_state(flight_mode="ANGLE")
     channels, _, _, _ = gc.compute_channels(state, fc)
     assert channels[fc.CH_AUX2] == fc.AUX_ANGLE
+
+
+# ══════════════════════════════════════════════
+# HOLD POS
+# ══════════════════════════════════════════════
+
+def test_hold_pos_on_sets_nav_mode(gc, fc):
+    """HOLD POS ON + ARM → AUX2 = NAV_ALTHOLD_POSHOLD (2000)."""
+    state = _make_state(is_arming_requested=True, hold_pos=True, flight_mode="DIRECT")
+    channels, _, _, _ = gc.compute_channels(state, fc)
+    assert channels[fc.CH_AUX2] == fc.AUX_NAV_ALTHOLD_POSHOLD
+
+
+def test_hold_pos_off_sets_angle(gc, fc):
+    """HOLD POS OFF → AUX2 = ANGLE (1500)."""
+    state = _make_state(is_arming_requested=True, hold_pos=False, flight_mode="MANUAL")
+    channels, _, _, _ = gc.compute_channels(state, fc)
+    assert channels[fc.CH_AUX2] == fc.AUX_ANGLE
+
+
+def test_hold_pos_disarm_forces_angle(gc, fc):
+    """SAFETY: HOLD POS ON + DISARM → AUX2 phải = ANGLE."""
+    state = _make_state(is_arming_requested=False, hold_pos=True, flight_mode="DIRECT")
+    channels, _, _, _ = gc.compute_channels(state, fc)
+    assert channels[fc.CH_AUX1] == fc.AUX_DISARM
+    assert channels[fc.CH_AUX2] == fc.AUX_ANGLE  # Force ANGLE, safety!
 
 
 def test_safe_land_rth_always_off(gc, fc):
@@ -253,6 +291,26 @@ def test_all_channels_in_valid_range(gc, fc):
 # ══════════════════════════════════════════════
 # GROUND IDLE DETECTION — AUTO-DISARM
 # ══════════════════════════════════════════════
+
+def test_auto_disarm_forces_angle_in_direct_mode(gc, fc, monkeypatch):
+    """SAFETY: Auto-DISARM trong DIRECT mode phải force AUX2=ANGLE.
+
+    Cùng root cause với BUG #1: INAV reject DISARM khi NAV active.
+    """
+    import time as _time
+    t0 = _time.time()
+    state = _make_state(
+        is_arming_requested=True, left_throttle=0.0, flight_mode="DIRECT"
+    )
+    monkeypatch.setattr(_time, "time", lambda: t0)
+    gc.compute_channels(state, fc, surface_altitude=0.10)
+
+    monkeypatch.setattr(_time, "time", lambda: t0 + 3.0)
+    channels, _, _, _ = gc.compute_channels(state, fc, surface_altitude=0.10)
+    assert channels[fc.CH_AUX1] == fc.AUX_DISARM   # Auto-DISARM
+    assert channels[fc.CH_AUX2] == fc.AUX_ANGLE     # Force ANGLE, không NAV!
+    assert gc.auto_disarmed is True
+
 
 def test_auto_disarm_after_ground_idle(gc, fc, monkeypatch):
     """ARM + throttle=0 + surface<0.15m + 2s → AUX1 phải = DISARM."""

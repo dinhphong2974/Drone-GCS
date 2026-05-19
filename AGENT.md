@@ -51,7 +51,7 @@
 | TICK_INTERVAL_MS | 100 | 10Hz state machine |
 | RC_LINK_WAIT_S | 2.0 | INAV ARM_SWITCH safety |
 | NAV_OFF_DELAY_S | 0.3 | Tắt NAV trước DISARM |
-| LIDAR_TRUST_RANGE_M | 1.0 | MTF-02 sai lệch >1m |
+| LIDAR_TRUST_RANGE_M | 2.2 | MTF-02 trust ≤2.2m (accuracy 2%) |
 | MANUAL_HOVER_THROTTLE | 1400 | 3.5" 6S hover estimate |
 | MANUAL_RAMP_STEP | 50 | μs/tick ramp speed |
 

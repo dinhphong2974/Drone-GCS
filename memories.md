@@ -31,7 +31,7 @@
 
 - **BoxID SpeedyBee**: RTH=10, POSHOLD=11, FAILSAFE=27, NAV_WP=28 (KHÁC chuẩn INAV)
 - **AUX2=2000 chồng chéo 3 mode** (ALTHOLD+POSHOLD+WP) là ĐÚNG thiết kế
-- **LiDAR MTF-02**: Trust ≤1m, max 2.5m, giá trị âm = out of range
+- **LiDAR MTF-02**: Trust ≤2.2m, max 2.5m, giá trị âm = out of range
 - **NAV_OFF 300ms**: INAV từ chối DISARM khi NAV active → phải tắt NAV trước
 - **INAV MSP override**: Cần `receiver_type = MSP` HOẶC `msp_override_channels` bitmask + MSP_OVERRIDE mode
 - **MSP_SET_RAW_RC ≥5Hz**: Dưới 5Hz INAV revert về RC gốc (failsafe)

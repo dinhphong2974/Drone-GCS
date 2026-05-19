@@ -106,7 +106,7 @@ class FlightController(QObject):
 
     # ── LiDAR MTF-02 — Sensor Fusion ──
     LIDAR_MAX_RANGE_M = 2.5         # Tầm đo tối đa MTF-02 AIO (2.5m)
-    LIDAR_TRUST_RANGE_M = 1.0       # Chỉ tin LiDAR khi ≤1m (phần cứng sai lệch >1m)
+    LIDAR_TRUST_RANGE_M = 2.2       # Tin LiDAR khi ≤2.2m (MTF-02 accuracy 2%, max range 2.5m)
     LIDAR_SOFT_LAND_THRESHOLD = 1.0 # Dưới 1m → dùng LiDAR để hạ cánh mềm
     LIDAR_GROUND_PROXIMITY = 0.15   # Nhỏ hơn 15cm → coi là đã chạm đất
 
@@ -558,7 +558,7 @@ class FlightController(QObject):
         Sensor Fusion: Chọn nguồn độ cao tốt nhất hiện có.
 
         Ưu tiên:
-        1. LiDAR MTF-02 khi: dữ liệu hợp lệ VÀ trong tầm đo (≤ LIDAR_MAX_RANGE_M)
+        1. LiDAR MTF-02 khi: dữ liệu hợp lệ VÀ trong tầm tin cậy (≤ LIDAR_TRUST_RANGE_M = 2.2m)
         2. Barometer (MSP_ALTITUDE) khi LiDAR ngoài tầm hoặc không có dữ liệu
 
         INAV firmware đã tự sensor-fusion internally; property này chỉ dùng

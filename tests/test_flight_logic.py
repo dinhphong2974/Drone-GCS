@@ -176,7 +176,7 @@ def test_msp_sonar_altitude_checksum_error():
 # ══════════════════════════════════════════════
 
 def test_effective_altitude_uses_lidar_when_in_range():
-    """8. Sensor Fusion: dùng LiDAR khi ≤1m (LIDAR_TRUST_RANGE_M) và dữ liệu hợp lệ"""
+    """8. Sensor Fusion: dùng LiDAR khi ≤2.2m (LIDAR_TRUST_RANGE_M) và dữ liệu hợp lệ"""
     state = MockDroneState()
     state.altitude = 2.0         # Barometer: 2.0m
     state.surface_altitude = 0.8  # LiDAR: 0.8m (trong tầm tin cậy ≤1m)
@@ -202,15 +202,15 @@ def test_effective_altitude_uses_baro_when_out_of_range():
 
 
 def test_effective_altitude_uses_baro_when_lidar_exceeds_max():
-    """10. Sensor Fusion: dùng Barometer khi LiDAR vượt tầm tin cậy (>1m)"""
+    """10. Sensor Fusion: dùng Barometer khi LiDAR vượt tầm tin cậy (>2.2m)"""
     state = MockDroneState()
     state.altitude = 3.0          # Barometer: 3.0m
-    state.surface_altitude = 1.5  # LiDAR đọc 1.5m (vượt LIDAR_TRUST_RANGE_M=1.0m)
+    state.surface_altitude = 2.4  # LiDAR đọc 2.4m (vượt LIDAR_TRUST_RANGE_M=2.2m)
     state.has_valid_surface = True
 
     fc = FlightController(state)
     
-    # LiDAR đọc 1.5m > 1.0m trust range → phải dùng Barometer
+    # LiDAR đọc 2.4m > 2.2m trust range → phải dùng Barometer
     assert abs(fc._effective_altitude - 3.0) < 0.01
 
 
@@ -255,7 +255,7 @@ def test_lidar_constants():
     fc = FlightController(MockDroneState())
     
     assert fc.LIDAR_MAX_RANGE_M == 2.5
-    assert fc.LIDAR_TRUST_RANGE_M == 1.0
+    assert fc.LIDAR_TRUST_RANGE_M == 2.2
     assert fc.LIDAR_SOFT_LAND_THRESHOLD == 1.0
     assert fc.LIDAR_GROUND_PROXIMITY == 0.15
     assert fc.LIDAR_GROUND_PROXIMITY < fc.LIDAR_SOFT_LAND_THRESHOLD

@@ -135,13 +135,16 @@ class GamepadController:
         channels = fc._safe_channels()
 
         # ARM/DISARM
+        is_arming = control_state.get("is_arming_requested")
         channels[fc.CH_AUX1] = (
-            fc.AUX_ARM if control_state.get("is_arming_requested")
-            else fc.AUX_DISARM
+            fc.AUX_ARM if is_arming else fc.AUX_DISARM
         )
 
         # Flight mode
-        if control_state.get("flight_mode") == "DIRECT":
+        # SAFETY FIX: Khi DISARM → PHẢI force ANGLE mode (tắt NAV modes)
+        # INAV firmware REJECT DISARM khi NAV mode active (ARMING_DISABLED_NAVIGATION)
+        # Chỉ cho phép bật NAV (DIRECT mode) khi đang ARM
+        if is_arming and control_state.get("flight_mode") == "DIRECT":
             channels[fc.CH_AUX2] = fc.AUX_NAV_ALTHOLD_POSHOLD
         else:
             channels[fc.CH_AUX2] = fc.AUX_ANGLE
@@ -157,7 +160,6 @@ class GamepadController:
         channels[fc.CH_THROTTLE] = self._current_throttle
 
         # ── Ground Idle Detection — Auto-DISARM khi nằm đất + ga min > 2s ──
-        is_arming = control_state.get("is_arming_requested")
         if (is_arming
                 and self._current_throttle <= 1000
                 and 0 <= surface_altitude < self.GROUND_PROXIMITY_M):
@@ -168,6 +170,8 @@ class GamepadController:
             elif time.time() - self._ground_idle_start >= self.GROUND_IDLE_TIMEOUT_S:
                 # Timeout → tự DISARM để chống bouncing loop
                 channels[fc.CH_AUX1] = fc.AUX_DISARM
+                # SAFETY FIX: Force ANGLE khi auto-DISARM (cùng root cause BUG #1)
+                channels[fc.CH_AUX2] = fc.AUX_ANGLE
                 self._auto_disarmed = True
                 self._ground_idle_active = False
         else:

@@ -925,6 +925,7 @@ class GCSApp(MainWindow):
             return
 
         self.gamepad_tab.set_blocked_reason("")
+        self.gamepad_tab.update_keyboard_input()  # Process keyboard → stick values
         state = self.gamepad_tab.get_control_state()
 
         # ── Delegate computation → GamepadController ──

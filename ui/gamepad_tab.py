@@ -181,6 +181,7 @@ class GamepadTab(QWidget):
         self._arming_requested = False
         self._fc_state = "IDLE"
         self._flight_mode = "MANUAL"
+        self._hold_pos = False
         self._speed_mode = 60
         self._left_x = 0.0
         self._left_throttle = 0.0
@@ -190,8 +191,16 @@ class GamepadTab(QWidget):
         self._preview_channels = [1500] * 8
         self._last_rc_ack_ts: float | None = None
 
+        # ── Keyboard control state ──
+        self._pressed_keys: set = set()
+        # Throttle step (normalized 0-1) per tick, matches GamepadController.THROTTLE_STEPS
+        self._THROTTLE_KB_STEPS = {30: 0.008, 60: 0.016, 100: 0.026}
+        # Stick ramp: 0→1.0 in ~350ms at 20Hz tick rate
+        self._STICK_RAMP_STEP = 0.15
+
         self._setup_ui()
         self._refresh_ui()
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
@@ -382,6 +391,43 @@ class GamepadTab(QWidget):
         quick_text.setWordWrap(True)
         quick_text.setStyleSheet("color: #9aa3c7; font-size: 11px; line-height: 1.35;")
         center_layout.addWidget(quick_text)
+
+        kb_legend = QLabel(
+            "⌨ Keyboard Controls\n"
+            "W/S: Throttle ↑↓ (giữ khi nhả)\n"
+            "A/D: Yaw ←→ (về center)\n"
+            "↑↓←→: Pitch/Roll (về center)"
+        )
+        kb_legend.setWordWrap(True)
+        kb_legend.setStyleSheet(
+            "color: #7fd4ff; font-size: 11px; line-height: 1.35;"
+            "background-color: #0a0f1a; border: 1px solid #1d2940;"
+            "border-radius: 6px; padding: 8px;"
+        )
+        center_layout.addWidget(kb_legend)
+
+        self.btn_hold_pos = QPushButton("\U0001f6e1 HOLD POS OFF")
+        self.btn_hold_pos.setCheckable(True)
+        self.btn_hold_pos.setCursor(Qt.PointingHandCursor)
+        self.btn_hold_pos.setMinimumHeight(44)
+        self.btn_hold_pos.setStyleSheet("""
+            QPushButton {
+                background-color: #1a2332;
+                color: #9ca3af;
+                border: 2px solid #2d3a4f;
+                border-radius: 10px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:checked {
+                background-color: #1B5E20;
+                color: #A5D6A7;
+                border: 2px solid #4CAF50;
+            }
+            QPushButton:hover { border-color: #4FC3F7; }
+        """)
+        self.btn_hold_pos.toggled.connect(self._on_hold_pos_toggled)
+        center_layout.addWidget(self.btn_hold_pos)
 
         self.btn_emergency = QPushButton("\u26d4 EMERGENCY STOP")
         self.btn_emergency.setCursor(Qt.PointingHandCursor)
@@ -591,11 +637,20 @@ class GamepadTab(QWidget):
         if not enabled:
             self.btn_arm_toggle.setChecked(False)
             self._on_arm_toggled(False)
+            self._pressed_keys.clear()  # Tránh stale keys khi re-enable
+            # Reset HOLD POS
+            self._hold_pos = False
+            self.btn_hold_pos.blockSignals(True)
+            self.btn_hold_pos.setChecked(False)
+            self.btn_hold_pos.setText("\U0001f6e1 HOLD POS OFF")
+            self.btn_hold_pos.blockSignals(False)
             
         self.lbl_gamepad_state.setText("ON" if enabled else "OFF")
         self.lbl_gamepad_state.setStyleSheet(
             f"color: {'#4CAF50' if enabled else '#9ca3af'}; font-weight: bold;"
         )
+        if enabled:
+            self.setFocus()  # Grab keyboard focus for gamepad controls
         if emit:
             self.enabled_changed.emit(enabled)
 
@@ -619,12 +674,29 @@ class GamepadTab(QWidget):
         self._flight_mode = mode
         self.btn_angle.setChecked(mode == "MANUAL")
         self.btn_althold.setChecked(mode == "DIRECT")
+        # Đồng bộ 2 chiều: DIRECT ↔ HOLD POS
+        self._hold_pos = (mode == "DIRECT")
+        self.btn_hold_pos.blockSignals(True)
+        self.btn_hold_pos.setChecked(self._hold_pos)
+        self.btn_hold_pos.setText(
+            "\U0001f6e1 HOLD POS ON" if self._hold_pos else "\U0001f6e1 HOLD POS OFF"
+        )
+        self.btn_hold_pos.blockSignals(False)
         self.lbl_mode.setText(mode)
         self.lbl_mode.setStyleSheet(
             f"color: {'#4FC3F7' if mode == 'MANUAL' else '#FFD54F'}; font-weight: bold;"
         )
         if emit:
             self.flight_mode_changed.emit(mode)
+
+    def _on_hold_pos_toggled(self, checked: bool):
+        """Toggle HOLD POS → đồng bộ flight mode."""
+        self._hold_pos = checked
+        self.btn_hold_pos.setText(
+            "\U0001f6e1 HOLD POS ON" if checked else "\U0001f6e1 HOLD POS OFF"
+        )
+        # Đồng bộ ngược → flight mode buttons
+        self._set_flight_mode("DIRECT" if checked else "MANUAL")
 
     def _set_speed_mode(self, speed: int, emit: bool = True):
         self._speed_mode = speed
@@ -661,7 +733,8 @@ class GamepadTab(QWidget):
             "right_x": self._right_x,
             "right_y": self._right_y,
             "blocked_reason": self._blocked_reason,
-            "is_arming_requested": self._arming_requested
+            "is_arming_requested": self._arming_requested,
+            "hold_pos": self._hold_pos,
         }
 
     def set_connection_status(self, connected: bool, message: str = ""):
@@ -683,6 +756,7 @@ class GamepadTab(QWidget):
         self.btn_speed_60.setEnabled(connected)
         self.btn_speed_100.setEnabled(connected)
         self.btn_emergency.setEnabled(connected)
+        self.btn_hold_pos.setEnabled(connected)
         if not connected:
             self._set_gamepad_enabled(False, emit=False)
             self.reset_sticks()
@@ -711,6 +785,80 @@ class GamepadTab(QWidget):
     def reset_sticks(self):
         self.left_stick.set_values(0.0, 0.0, emit=True)
         self.right_stick.set_values(0.0, 0.0, emit=True)
+
+    # ══════════════════════════════════════════════
+    # KEYBOARD INPUT — Điều khiển bằng bàn phím
+    # ══════════════════════════════════════════════
+
+    def keyPressEvent(self, event):
+        """Nhận phím điều khiển gamepad (WASD + Arrow keys)."""
+        if event.isAutoRepeat():
+            return
+        key = event.key()
+        if key in (Qt.Key_W, Qt.Key_S, Qt.Key_A, Qt.Key_D,
+                   Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            self._pressed_keys.add(key)
+        else:
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """Xử lý nhả phím: throttle giữ, stick trở về center."""
+        if event.isAutoRepeat():
+            return
+        key = event.key()
+        if key in self._pressed_keys:
+            self._pressed_keys.discard(key)
+            # Yaw (A/D): trở về center khi nhả
+            if key in (Qt.Key_A, Qt.Key_D):
+                self._left_x = 0.0
+                self.left_stick.set_values(self._left_x, self._left_throttle)
+            # Pitch (Up/Down): trở về center khi nhả
+            elif key in (Qt.Key_Up, Qt.Key_Down):
+                self._right_y = 0.0
+                self.right_stick.set_values(self._right_x, self._right_y)
+            # Roll (Left/Right): trở về center khi nhả
+            elif key in (Qt.Key_Left, Qt.Key_Right):
+                self._right_x = 0.0
+                self.right_stick.set_values(self._right_x, self._right_y)
+            # Throttle (W/S): KHÔNG reset — giữ nguyên vị trí (Mode 2)
+        else:
+            super().keyReleaseEvent(event)
+
+    def update_keyboard_input(self):
+        """Cập nhật giá trị stick từ phím đang nhấn. Gọi mỗi tick 20Hz."""
+        if not self._pressed_keys:
+            return
+
+        step = self._THROTTLE_KB_STEPS.get(self._speed_mode, 0.016)
+        ramp = self._STICK_RAMP_STEP
+
+        # Throttle (W/S) — tăng/giảm dần, giữ khi nhả
+        if Qt.Key_W in self._pressed_keys:
+            self._left_throttle = min(1.0, self._left_throttle + step)
+        if Qt.Key_S in self._pressed_keys:
+            self._left_throttle = max(0.0, self._left_throttle - step)
+
+        # Yaw (A/D) — ramp khi giữ, về center khi nhả
+        if Qt.Key_A in self._pressed_keys:
+            self._left_x = max(-1.0, self._left_x - ramp)
+        elif Qt.Key_D in self._pressed_keys:
+            self._left_x = min(1.0, self._left_x + ramp)
+
+        # Pitch (Up/Down) — ramp khi giữ, về center khi nhả
+        if Qt.Key_Up in self._pressed_keys:
+            self._right_y = min(1.0, self._right_y + ramp)
+        elif Qt.Key_Down in self._pressed_keys:
+            self._right_y = max(-1.0, self._right_y - ramp)
+
+        # Roll (Left/Right) — ramp khi giữ, về center khi nhả
+        if Qt.Key_Left in self._pressed_keys:
+            self._right_x = max(-1.0, self._right_x - ramp)
+        elif Qt.Key_Right in self._pressed_keys:
+            self._right_x = min(1.0, self._right_x + ramp)
+
+        # Đồng bộ visual feedback lên AnalogStick widgets
+        self.left_stick.set_values(self._left_x, self._left_throttle)
+        self.right_stick.set_values(self._right_x, self._right_y)
 
     def update_rc_preview(
         self,
